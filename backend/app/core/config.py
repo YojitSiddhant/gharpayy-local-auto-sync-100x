@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     ocr_min_image_side: int = 32
     ocr_tesseract_timeout_seconds: float = 20.0
     ocr_tesseract_psm: int = 11
+    # Reference-inspired field cleanup. OFF preserves the legacy parser; SHADOW
+    # computes the candidate without changing persisted OCR; ON uses it only for
+    # structurally recognized timestamp fields.
+    layout_ocr_mode: Literal["off", "shadow", "on"] = "off"
+    message_postcorrect_mode: Literal["off", "shadow", "on"] = "off"
     ocr_max_concurrency: int = 1
     ocr_queue_wait_seconds: float = 10.0
 

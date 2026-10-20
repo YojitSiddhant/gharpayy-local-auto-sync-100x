@@ -20,6 +20,7 @@ from backend.app.ocr.engine import OcrError, OcrTimeoutError, OcrUnavailableErro
 from backend.app.ocr.image_validation import ValidatedImage, decode_rgb
 from backend.app.ocr.storage import store_evidence
 from backend.app.ocr.whatsapp_parser import PARSER_VERSION, parse_chat_list
+from backend.app.ocr.message_postcorrect import correct_message
 from backend.app.ocr.duplicate_detection import eligible_phone, phone_fingerprint
 from backend.app.ml.shadow import run_shadow_prediction
 
@@ -155,7 +156,7 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     result = OcrResult(capture_id=capture.id, attempt=attempt, tesseract_psm=settings.ocr_tesseract_psm, started_at=utcnow())
     try:
         output = engine_factory(settings).run(decode_rgb(image.data))
-        parsed = parse_chat_list(output.lines, image.width, image.height)
+        parsed = parse_chat_list(output.lines, image.width, image.height, field_cleanup=settings.layout_ocr_mode == "on")
     except Exception as exc:  # noqa: BLE001 - any failure must be recorded, never leave the capture "processing"
         code = exc.code if isinstance(exc, OcrError) else "OCR_FAILED"
         result.status, result.error_code, result.error_message = "failed", code, _OCR_ERROR_MESSAGE.get(code)
@@ -165,6 +166,10 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
         db.commit()
         raise ApiError(_OCR_ERROR_STATUS.get(type(exc), 500), code, _OCR_ERROR_MESSAGE.get(code, "OCR failed."), {"capture_id": capture.id}) from None
 
+    if settings.layout_ocr_mode == "shadow":
+        # The parser's field-specific candidate is intentionally not persisted
+        # in shadow mode; this provides a safe comparison switch for the demo.
+        pass
     if settings.ml_mode == "shadow":
         # Deliberately discard shadow output: it is diagnostic-only and cannot alter OCR.
         try:
@@ -191,11 +196,20 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     result.duration_ms = output.duration_ms
     result.completed_at = utcnow()
     for row in parsed.rows:
+        raw_message = row.message_preview
+        corrected_message, changes = correct_message(raw_message)
+        if settings.message_postcorrect_mode == "off":
+            corrected_message, changes = raw_message, []
+        if changes and settings.message_postcorrect_mode in ("shadow", "on"):
+            row.warnings.append("Message postcorrection: " + "; ".join(
+                f"{change['original']} -> {change['corrected']}" for change in changes))
+        if settings.message_postcorrect_mode != "on":
+            corrected_message = raw_message
         result.rows.append(OcrRowObservation(
             position=row.position, display_header_text=row.display_header_text,
             phone_candidate_raw=row.phone_raw[:64] if row.phone_raw else None,
             phone_candidate_normalized=row.phone_normalized, phone_status=row.phone_status,
-            message_preview=row.message_preview, preview_truncated=row.preview_truncated,
+            message_preview=corrected_message, preview_truncated=row.preview_truncated,
             visible_timestamp_text=row.visible_timestamp_text[:64] if row.visible_timestamp_text else None,
             timestamp_kind=row.timestamp_kind,
             row_left=row.row_bounds["left"], row_top=row.row_bounds["top"],
