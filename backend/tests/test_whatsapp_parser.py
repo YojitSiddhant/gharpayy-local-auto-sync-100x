@@ -1,4 +1,5 @@
 from backend.app.ocr.whatsapp_parser import classify_phone_header, parse_chat_list, timestamp_kind
+from backend.app.ocr.engine import OcrLine, OcrWord
 from backend.tests.conftest import fake_chat_lines, make_line
 
 W, H = 720, 1280
@@ -101,3 +102,33 @@ def test_timestamp_kinds():
     assert timestamp_kind("Monday") == "weekday"
     assert timestamp_kind("13/09/26") == "date"
     assert timestamp_kind("pen") is None
+
+
+def test_status_tick_like_token_is_removed_only_with_icon_geometry():
+    lines = [
+        make_line("+91 98765 43210", 140, 180),
+        make_line("2:52 pm", 560, 184),
+        OcrLine(
+            text="W Need a room", confidence=90, left=140, top=228, right=380, bottom=245,
+            words=[
+                OcrWord("W", 90, 140, 228, 167, 245),
+                OcrWord("Need", 90, 175, 228, 225, 245),
+                OcrWord("a", 90, 232, 228, 245, 245),
+                OcrWord("room", 90, 252, 228, 310, 245),
+            ],
+        ),
+    ]
+    row = parse_chat_list(lines, W, H).rows[0]
+    assert row.message_preview == "Need a room"
+    assert any("status glyph" in warning for warning in row.warnings)
+
+
+def test_legitimate_single_letter_message_is_preserved():
+    lines = [make_line("+91 98765 43210", 140, 180), make_line("2:52 pm", 560, 184)]
+    lines.append(
+        OcrLine(
+            text="W hello", confidence=90, left=140, top=228, right=250, bottom=258,
+            words=[OcrWord("W", 90, 140, 228, 156, 258), OcrWord("hello", 90, 164, 228, 244, 258)],
+        )
+    )
+    assert parse_chat_list(lines, W, H).rows[0].message_preview == "W hello"

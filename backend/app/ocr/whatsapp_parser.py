@@ -47,6 +47,7 @@ EDGE_ARTIFACTS_RE = re.compile(r"^[\s@©®●•○|>]+|[\s@©®●•○|>]+$")
 NAV_WORDS_RE = re.compile(r"^(?:chats|calls|updates|communities|tools|status|whatsapp|search|ask meta ai)\b", re.I)
 BADGE_RE = re.compile(r"^\W*\d{1,3}\+?\W*$")
 TRUNCATED_RE = re.compile(r"(?:\.{2,}|…)\s*$")
+STATUS_GLYPH_RE = re.compile(r"^(?:w|v|/|~|Ww|Vv|vv|ww)$", re.I)
 
 MAX_HEADER_CHARS = 512
 MAX_PREVIEW_CHARS = 2000
@@ -197,6 +198,29 @@ def _is_phone_header(text: str) -> bool:
     return classify_phone_header(text).status != PHONE_STATUS_NONE
 
 
+def _preview_text(line: LineLike) -> tuple[str, bool]:
+    """Return preview text, removing only a geometry-supported status glyph.
+
+    WhatsApp's sent/delivered/read mark is immediately before preview text. In
+    Tesseract output it is commonly recognized as a short W/V-like token. A
+    lone letter must remain message content, so removal requires both a glyph
+    token shape and the small/stacked geometry seen in the captured UI.
+    """
+    words = list(getattr(line, "words", None) or [])
+    if len(words) < 2:
+        return line.text.strip(), False
+    first = words[0]
+    token = first.text.strip()
+    width = first.right - first.left
+    height = first.bottom - first.top
+    if not STATUS_GLYPH_RE.fullmatch(token):
+        return line.text.strip(), False
+    looks_like_icon = len(token) > 1 or width >= 24 or (token in {"/", "~"} and height >= 28)
+    if not looks_like_icon:
+        return line.text.strip(), False
+    return " ".join(w.text for w in words[1:]).strip(), True
+
+
 def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResult:
     warnings = ["Unverified OCR evidence; rows are not a complete chat-list coverage claim."]
     if width <= 0 or height <= 0:
@@ -268,7 +292,14 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResu
              and not NAV_WORDS_RE.match(l.text.strip())),
             key=lambda l: (l.top, l.left),
         )
-        preview = " ".join(l.text.strip() for l in preview_lines) or None
+        preview_parts: list[str] = []
+        status_glyph_removed = False
+        for line in preview_lines:
+            text, removed = _preview_text(line)
+            if text:
+                preview_parts.append(text)
+            status_glyph_removed = status_glyph_removed or removed
+        preview = " ".join(preview_parts) or None
 
         row_warnings: list[str] = []
         phone = classify_phone_header(header_text)
@@ -287,6 +318,8 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResu
             row_warnings.append("Timestamp not captured")
         elif getattr(timestamp_line, "split_timestamp", False):
             row_warnings.append("Timestamp was separated from a merged OCR header line using word boxes")
+        if status_glyph_removed:
+            row_warnings.append("Leading WhatsApp status glyph excluded using preview token geometry")
         if preview is None:
             row_warnings.append("Message preview not captured")
 
