@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import ApiError
+from backend.app.models.auth import CaptureSession, User
 from backend.app.models.ocr import OcrResult, OcrRowObservation, ScreenshotCapture, utcnow
 from backend.app.ocr.engine import OcrError, OcrTimeoutError, OcrUnavailableError, TesseractEngine
 from backend.app.ocr.image_validation import ValidatedImage, decode_rgb
@@ -82,12 +83,20 @@ def _ensure_capacity(db: Session, image: ValidatedImage, settings: Settings) -> 
 def process_screenshot(
     db: Session, image: ValidatedImage, account_label: str, filename: str | None,
     settings: Settings, engine_factory: EngineFactory = default_engine, meta: CaptureMeta | None = None,
+    *, owner: User | None = None, capture_session_id: str | None = None,
 ) -> tuple[ScreenshotCapture, bool]:
     """Return (capture, duplicate). Raises ApiError for OCR failures after recording them."""
     meta = meta or CaptureMeta()
+    session = None
+    if owner is not None and capture_session_id:
+        session = db.scalar(select(CaptureSession).where(CaptureSession.id == capture_session_id, CaptureSession.user_id == owner.id).with_for_update())
+        if session is None or session.status != "active" or session.expires_at <= utcnow() or not owner.is_active or not session.zone.is_active:
+            raise ApiError(409, "CAPTURE_SESSION_INVALID", "The capture session is no longer active.")
     capture = db.scalar(select(ScreenshotCapture).where(
         ScreenshotCapture.account_label == account_label, ScreenshotCapture.sha256 == image.sha256))
     if capture is not None:
+        if owner is not None and (capture.created_by_user_id != owner.id or capture.capture_session_id is None):
+            raise ApiError(409, "DUPLICATE_UNAVAILABLE", "This screenshot already exists outside the current capture ownership.")
         if capture.status == "completed":
             # Atomic increment: safe even if OCR concurrency is raised above one.
             db.execute(update(ScreenshotCapture).where(ScreenshotCapture.id == capture.id)
@@ -109,6 +118,9 @@ def process_screenshot(
             source_label=meta.source_label, screenshot_label=meta.screenshot_label or filename,
             original_width=meta.original_width or image.width, original_height=meta.original_height or image.height,
             crop=meta.crop,
+            zone_id=session.zone_id if session else None,
+            created_by_user_id=owner.id if owner else None,
+            capture_session_id=session.id if session else None,
         )
         db.add(capture)
         try:

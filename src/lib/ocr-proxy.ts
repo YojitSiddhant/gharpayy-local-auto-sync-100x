@@ -7,7 +7,7 @@ const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals"])
 const QUERY_PARAMS = ["search", "status", "include_trash"];
 export const JSON_BODY_LIMIT = 1024 * 1024;
 export const UPLOAD_METADATA_HEADERS = [
-  "x-account-label", "x-filename", "x-source-mode", "x-captured-at", "x-source-label",
+  "x-account-label", "x-filename", "x-source-mode", "x-captured-at", "x-source-label", "x-capture-session-id",
   "x-screenshot-label", "x-original-width", "x-original-height", "x-crop",
 ];
 
@@ -66,6 +66,7 @@ export function checkProxyRequest(headers: Headers): ProxyRejection | null {
 /** Map an allowlisted /api/local/evidence/... request onto the FastAPI path. Anything else is refused. */
 export function resolveEvidencePath(method: string, segments: string[], search: URLSearchParams): string | null {
   if (segments[0] === "auth" && (method === "POST" || method === "GET") && (segments[1] === "login" || segments[1] === "logout" || segments[1] === "me") && segments.length === 2) return `auth/${segments[1]}`;
+  if (segments[0] === "capture-sessions" && ((method === "GET" && segments.length === 2 && segments[1] === "current") || (method === "POST" && (segments.length === 1 || (segments.length === 3 && segments[2] === "stop"))))) return segments.join("/");
   if (segments[0] === "admin" && segments.length >= 2 && segments.length <= 4 && ["GET", "POST", "PATCH"].includes(method)) {
     const allowed = /^admin\/(zones|users)(\/[^/]+)?(\/(disable|enable|password|zone))?$/.test(segments.join("/"));
     if (allowed) return segments.join("/");

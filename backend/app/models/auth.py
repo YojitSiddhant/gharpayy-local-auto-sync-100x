@@ -36,6 +36,7 @@ class Zone(Base):
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow, onupdate=utcnow)
     users: Mapped[list[User]] = relationship(back_populates="zone")
+    capture_sessions: Mapped[list[CaptureSession]] = relationship(back_populates="zone")
 
 
 class User(Base):
@@ -54,6 +55,7 @@ class User(Base):
     password_changed_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
     zone: Mapped[Zone | None] = relationship(back_populates="users")
     sessions: Mapped[list[AuthSession]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    capture_sessions: Mapped[list[CaptureSession]] = relationship(back_populates="user")
 
 
 class AuthSession(Base):
@@ -80,3 +82,18 @@ class AdminAuditEvent(Base):
     target_id: Mapped[str] = mapped_column(String(36), nullable=False)
     details: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+
+
+class CaptureSession(Base):
+    __tablename__ = "capture_sessions"
+    __table_args__ = (CheckConstraint("status IN ('active','stopped','expired')", name="ck_capture_sessions_status"), Index("ix_capture_sessions_user_status", "user_id", "status"), Index("ix_capture_sessions_zone_status", "zone_id", "status"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    zone_id: Mapped[str] = mapped_column(ForeignKey("zones.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
+    started_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+    stopped_at: Mapped[datetime | None] = mapped_column(Timestamp)
+    expires_at: Mapped[datetime] = mapped_column(Timestamp, nullable=False)
+    stop_reason: Mapped[str | None] = mapped_column(String(64))
+    user: Mapped[User] = relationship(back_populates="capture_sessions")
+    zone: Mapped[Zone] = relationship(back_populates="capture_sessions")

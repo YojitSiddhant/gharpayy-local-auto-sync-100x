@@ -9,21 +9,16 @@ from starlette.concurrency import run_in_threadpool
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
-from backend.app.core.auth import require_super_admin
+from backend.app.core.auth import current_user
+from backend.app.models.auth import CaptureSession, User
+from sqlalchemy import select
 from backend.app.db.session import get_db
 from backend.app.ocr.concurrency import run_ocr_bounded
 from backend.app.ocr.image_validation import ImageLimits, validate_image
 from backend.app.ocr.service import CaptureMeta, EngineFactory, default_engine, process_screenshot
 from backend.app.schemas.ocr import build_extract_response
 
-def require_capture_session(settings: Settings = Depends(get_settings)) -> None:
-    # Phase 9E owns capture-session creation and zone selection. Until then, deny all new uploads
-    # rather than accepting a browser-provided zone/account label as ownership.
-    if settings.app_env != "test":
-        raise ApiError(409, "CAPTURE_SESSION_REQUIRED", "A server-created capture session is required before uploading evidence.")
-
-
-router = APIRouter(prefix="/ocr", tags=["ocr"], dependencies=[Depends(require_local_api_access), Depends(require_super_admin), Depends(require_capture_session)])
+router = APIRouter(prefix="/ocr", tags=["ocr"], dependencies=[Depends(require_local_api_access)])
 
 ACCOUNT_HEADER = "x-account-label"
 FILENAME_HEADER = "x-filename"
@@ -117,10 +112,15 @@ async def extract_screenshot(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     engine_factory: EngineFactory = Depends(get_engine_factory),
+    user: User = Depends(current_user),
 ) -> JSONResponse:
     """Body: raw image bytes. Headers: Content-Type (image/png|jpeg|webp), X-Account-Label, optional X-Filename,
     and optional capture metadata (X-Source-Mode, X-Captured-At, X-Source-Label, X-Screenshot-Label,
     X-Original-Width, X-Original-Height, X-Crop) — all URI-encoded where textual."""
+    session_id = request.headers.get("x-capture-session-id", "").strip()
+    session = db.scalar(select(CaptureSession).where(CaptureSession.id == session_id, CaptureSession.user_id == user.id).with_for_update()) if session_id else None
+    if settings.app_env != "test" and (session is None or session.status != "active" or session.expires_at <= datetime.now(timezone.utc).replace(tzinfo=None) or not user.is_active or not session.zone.is_active):
+        raise ApiError(409, "CAPTURE_SESSION_REQUIRED", "A valid active capture session is required.")
     account_label = _header_text(request, ACCOUNT_HEADER, MAX_ACCOUNT_LABEL)
     if not account_label:
         raise ApiError(400, "ACCOUNT_LABEL_REQUIRED", "A WhatsApp account label is required.")
@@ -128,6 +128,6 @@ async def extract_screenshot(
     meta = _capture_meta(request)
     data = await _read_capped_body(request, settings.ocr_max_upload_bytes)
     image = await run_in_threadpool(validate_image, data, request.headers.get("content-type"), image_limits(settings))
-    capture, duplicate = await run_ocr_bounded(settings, process_screenshot, db, image, account_label, filename, settings, engine_factory, meta)
+    capture, duplicate = await run_ocr_bounded(settings, process_screenshot, db, image, account_label, filename, settings, engine_factory, meta, owner=user, capture_session_id=session.id if session else None)
     body = build_extract_response(capture, duplicate).model_dump(mode="json")
     return JSONResponse(status_code=200 if duplicate else 201, content=body, headers={"Cache-Control": "no-store"})
