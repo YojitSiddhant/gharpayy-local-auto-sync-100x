@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gharpayy.phase7a.chat-list-label.v1",
+  "title": "Gharpayy Phase 7A labeled chat-list screenshot",
+  "type": "object",
+  "required": ["schema_version", "example_id", "screenshot_sha256", "capture_group_id", "image", "row", "fields", "review", "dataset_version", "synthetic"],
+  "properties": {
+    "schema_version": {"const": "phase7a-label-v1"},
+    "example_id": {"type": "string", "minLength": 1},
+    "screenshot_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture_group_id": {"type": "string", "minLength": 1},
+    "image": {"$ref": "#/$defs/image"},
+    "row": {"type": "object", "required": ["index", "bbox"], "properties": {"index": {"type": "integer", "minimum": 1}, "bbox": {"$ref": "#/$defs/bbox"}}, "additionalProperties": false},
+    "fields": {"$ref": "#/$defs/fields"},
+    "review": {"type": "object", "required": ["approved_for_training", "reviewer", "status"], "properties": {"approved_for_training": {"type": "boolean"}, "reviewer": {"type": "string", "minLength": 1}, "status": {"enum": ["verified", "unreadable", "ambiguous", "not_visible", "partial"]}}, "additionalProperties": false},
+    "dataset_version": {"type": "string", "minLength": 1},
+    "synthetic": {"type": "boolean"}
+  },
+  "$defs": {
+    "bbox": {"type": "object", "required": ["left", "top", "right", "bottom"], "properties": {"left": {"type": "integer", "minimum": 0}, "top": {"type": "integer", "minimum": 0}, "right": {"type": "integer", "minimum": 1}, "bottom": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+    "image": {"type": "object", "required": ["width", "height", "crop"], "properties": {"width": {"type": "integer", "minimum": 1}, "height": {"type": "integer", "minimum": 1}, "crop": {"$ref": "#/$defs/bbox"}}, "additionalProperties": false},
+    "field": {"type": "object", "required": ["visible_text", "status"], "properties": {"visible_text": {"type": ["string", "null"]}, "status": {"enum": ["verified", "unreadable", "not_visible", "partial", "ambiguous", "truncated"]}, "bbox": {"anyOf": [{"$ref": "#/$defs/bbox"}, {"type": "null"}]}}, "additionalProperties": true},
+    "fields": {"type": "object", "required": ["phone", "message", "timestamp"], "properties": {"phone": {"allOf": [{"$ref": "#/$defs/field"}, {"type": "object", "properties": {"normalized": {"type": ["string", "null"]}}}]}, "message": {"allOf": [{"$ref": "#/$defs/field"}, {"type": "object", "properties": {"truncated": {"type": "boolean"}}}]}, "timestamp": {"allOf": [{"$ref": "#/$defs/field"}, {"type": "object", "properties": {"kind": {"type": ["string", "null"]}}}]}}, "additionalProperties": false}
+  },
+  "additionalProperties": false
+}
+
