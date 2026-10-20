@@ -1,22 +1,67 @@
 @import "tailwindcss";
 
-:root { --background: #f6f7f2; --foreground: #17352f; }
-
+/* Design tokens copied from the lead-loved-flow reference (src/styles.css, light theme, oklch):
+   neutral base + Gharpayy orange primary/accent, Plus Jakarta Sans. */
 @theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", monospace;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, monospace;
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+:root {
+  --radius: 0.75rem;
+  --background: oklch(0.985 0.004 60);
+  --foreground: oklch(0.22 0.012 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.012 260);
+  --primary: oklch(0.715 0.185 45);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.96 0.008 60);
+  --secondary-foreground: oklch(0.28 0.012 260);
+  --muted: oklch(0.965 0.006 60);
+  --muted-foreground: oklch(0.52 0.014 260);
+  --accent: oklch(0.715 0.185 45);
+  --accent-foreground: oklch(0.99 0 0);
+  --destructive: oklch(0.585 0.22 27);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.91 0.006 60);
+  --input: oklch(0.91 0.006 60);
+  --ring: oklch(0.715 0.185 45);
 }
-.site-shell { min-height: 100vh; display: flex; flex-direction: column; background: radial-gradient(circle at 80% 10%, #dfece1 0, transparent 32%), var(--background); }
-.topbar, footer { display:flex; align-items:center; justify-content:space-between; padding: 28px 6vw; color:#17352f; }
-.brand-mark { width:38px; height:38px; display:grid; place-items:center; border:1px solid #17352f; border-radius:50%; font-weight:800; margin-right:12px; }
-.topbar > div:nth-child(2) { margin-right:auto; display:flex; flex-direction:column; letter-spacing:.03em; }.topbar strong { font-size:18px; }.topbar span { font-size:11px; opacity:.65; }.phase-label, footer { font-size:10px; letter-spacing:.16em; opacity:.65; }
-.hero { width:min(1050px, 88vw); margin: auto; padding: 9vh 0 12vh; }.eyebrow { color:#bd633e; letter-spacing:.2em; font-size:11px; font-weight:700; }.hero h1 { max-width:760px; font-size: clamp(48px, 8vw, 100px); line-height:.96; letter-spacing:-.07em; margin:24px 0; font-weight:600; }.hero h1 em { color:#bd633e; font-family: Georgia, serif; font-weight:400; }.hero-copy { max-width:490px; color:#48635d; line-height:1.65; font-size:17px; }.status-pill { display:inline-flex; align-items:center; gap:9px; margin:34px 0 72px; padding:11px 15px; border:1px solid #bdd0c1; border-radius:30px; color:#48635d; font-size:12px; background:#f6fbf5; }.status-dot { width:7px; height:7px; border-radius:50%; background:#d08b4c; }.foundation-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:26px; border-top:1px solid #c8d4c9; padding-top:24px; }.foundation-grid span { color:#bd633e; font-size:11px; }.foundation-grid h2 { font-size:17px; margin:12px 0 8px; }.foundation-grid p { color:#668078; font-size:13px; line-height:1.6; max-width:220px; } footer { border-top:1px solid #d8e0d6; margin-top:auto; }
-@media (max-width:700px) { .phase-label { display:none; }.foundation-grid { grid-template-columns:1fr; gap:10px; }.hero { padding-top:7vh; }.hero h1 { font-size:58px; } footer { gap:12px; align-items:flex-start; flex-direction:column; } }
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html, body {
+    height: 100%;
+  }
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+  }
+}
