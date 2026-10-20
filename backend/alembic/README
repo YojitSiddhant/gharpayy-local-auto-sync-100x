@@ -1,1 +1,1 @@
-Migration environment reserved for future domain schema changes.
+Alembic migrations for the MySQL schema. Run: backend/.venv/bin/alembic -c backend/alembic.ini upgrade head
