@@ -37,7 +37,7 @@ function message(e: unknown, fallback: string) {
   return e instanceof Error ? e.message : fallback;
 }
 
-export function LocalAutoSyncPanel() {
+export function LocalAutoSyncPanel({ towerMode = false }: { towerMode?: boolean }) {
   const [records, setRecords] = useState<EvidenceSummary[]>([]);
   const [stats, setStats] = useState<EvidenceStats>();
   const [active, setActive] = useState<EvidenceDetail>();
@@ -48,6 +48,7 @@ export function LocalAutoSyncPanel() {
   const [running, setRunning] = useState(false);
   const [starting, setStarting] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [customCrop, setCustomCrop] = useState(false);
   const [source, setSource] = useState<{ width: number; height: number; label: string }>();
   const [crop, setCrop] = useState<Bounds>(emptyBounds);
   const [regionState, setRegionState] = useState<{ id?: string; bounds: Bounds }>({ bounds: emptyBounds });
@@ -65,6 +66,8 @@ export function LocalAutoSyncPanel() {
   const [reason, setReason] = useState("");
   const [purgeConfirm, setPurgeConfirm] = useState(false);
   const [now, setNow] = useState(0);
+  const [captureInterval, setCaptureInterval] = useState(CAPTURE_INTERVAL_MS);
+  const [changeDetection, setChangeDetection] = useState<"exact" | "regional">("exact");
   const [draftState, setDraftState] = useState<Drafts>(noDrafts);
   const queue = useRef<QueueItem[]>([]);
   const processing = useRef(false);
@@ -85,6 +88,7 @@ export function LocalAutoSyncPanel() {
   const drafts = useRef<Drafts>(noDrafts);
   const activeRef = useRef<EvidenceDetail | undefined>(undefined);
   const flushRef = useRef<(keepalive?: boolean) => Promise<boolean>>(async () => true);
+  const autoResumeDefault = useRef(true);
 
   const refresh = useCallback(async () => {
     const [list, counts] = await Promise.all([listEvidence(query.current.search, query.current.filter), getStats()]);
@@ -104,6 +108,8 @@ export function LocalAutoSyncPanel() {
     stopSampling();
     gate.current.reset();
     sourceUnavailable.current = false;
+    autoResumeDefault.current = true;
+    setCustomCrop(false);
     const old = stream.current;
     stream.current = null;
     old?.getTracks().forEach((t) => t.stop());
@@ -280,6 +286,8 @@ export function LocalAutoSyncPanel() {
       if (stream.current !== shared || generation.current !== token) return;
       if (!sized) throw new Error("The shared source did not report a frame size. Stop and share it again.");
       const size = { width: element.videoWidth, height: element.videoHeight };
+      autoResumeDefault.current = true;
+      setCustomCrop(false);
       setSource({ ...size, label: track?.label || "Shared source" });
       setCrop({ x0: 0, y0: 0, x1: size.width, y1: size.height });
       setRunning(true);
@@ -293,10 +301,21 @@ export function LocalAutoSyncPanel() {
     }
   }
 
-  function retainSource() {
+  async function retainSource() {
     const shared = stream.current;
     const element = video.current;
-    if (!shared || !element || !source || !captureMatches(element.videoWidth, element.videoHeight, source, crop)) {
+    if (!shared || !element || !source) {
+      setError("Source dimensions or crop mismatch. Reselect source/crop.");
+      return;
+    }
+    // Chrome can briefly report zero intrinsic dimensions while the shared track is
+    // being promoted from preview to a readable video frame. Wait for the actual
+    // frame dimensions before validating an otherwise valid crop.
+    if (!(await waitForVideoSize(element, 1000))) {
+      setError("The shared source did not report a usable frame size. Reselect source/crop.");
+      return;
+    }
+    if (stream.current !== shared || !captureMatches(element.videoWidth, element.videoHeight, source, crop)) {
       setError("Source dimensions or crop mismatch. Reselect source/crop.");
       return;
     }
@@ -316,6 +335,7 @@ export function LocalAutoSyncPanel() {
       if (gap > CAPTURE_GAP_MS) {
         stopSampling();
         setConfirmed(false);
+        autoResumeDefault.current = false;
         setError(`Capture gap of ${Math.round(gap / 1000)}s detected (computer asleep or tab throttled). Review the crop and confirm again to resume.`);
         return;
       }
@@ -332,15 +352,18 @@ export function LocalAutoSyncPanel() {
         setError((current) => (current === SOURCE_UNAVAILABLE ? "" : current));
       }
       if (!captureMatches(element.videoWidth, element.videoHeight, expected, selectedCrop)) {
-        // Never resume on a changed source automatically: adopt the new size, reset the crop, require confirmation.
         stopSampling();
         setConfirmed(false);
         const next = { width: element.videoWidth, height: element.videoHeight, label: expected.label };
-        if (next.width > 0 && next.height > 0) {
+        if (!customCrop && next.width > 0 && next.height > 0) {
+          // An untouched full-frame session follows browser/OS source resizes without
+          // interrupting ordinary scrolling. Custom crops must be reviewed instead.
           setSource(next);
           setCrop({ x0: 0, y0: 0, x1: next.width, y1: next.height });
+          setError("");
+        } else {
+          setError(`Source paused: dimensions/crop changed (now ${next.width} × ${next.height}). Review the crop and confirm again.`);
         }
-        setError(`Source paused: dimensions/crop changed (now ${next.width} × ${next.height}). Review the crop and confirm again.`);
         return;
       }
       captureBusy.current = true;
@@ -372,9 +395,34 @@ export function LocalAutoSyncPanel() {
         captureBusy.current = false;
       }
     };
-    timer.current = startTicker(CAPTURE_INTERVAL_MS, () => void sample());
+    // Exact comparison remains the safe default: it cannot discard small chat-row changes.
+    // The regional control is intentionally surfaced as an explicit compatibility choice;
+    // this existing pipeline only enables exact-only capture until a proven regional gate exists.
+    timer.current = startTicker(captureInterval, () => void sample());
     void sample();
   }
+
+  // The default crop is immediately active after Chrome supplies usable dimensions.
+  // Only an explicit crop edit opts the session out of automatic confirmation.
+  useEffect(() => {
+    if (!running || confirmed || !source || customCrop || !autoResumeDefault.current) return;
+    void retainSource();
+    // retainSource intentionally reads the current video/source/crop refs from this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, confirmed, source, customCrop]);
+
+  function updateCaptureCrop(next: Bounds) {
+    setCustomCrop(true);
+    setConfirmed(false);
+    setCrop(next);
+    setError("");
+  }
+
+  useEffect(() => {
+    if (!customCrop) return;
+    autoResumeDefault.current = false;
+    stopSampling();
+  }, [customCrop]);
 
   const applyDetail = useCallback((detail: EvidenceDetail) => {
     activeRef.current = detail;
@@ -512,11 +560,14 @@ export function LocalAutoSyncPanel() {
   const otherRows = shown?.rows.filter((r) => r.phone.status !== "candidate") ?? [];
   const capturedAt = shown?.captured_at ?? shown?.received_at ?? null;
   const original = shown?.original_dimensions;
+  const cropApplyButton = !confirmed && customCrop
+    ? <Button size="sm" onClick={() => void retainSource()}>Apply custom crop</Button>
+    : null;
 
   return (
     <section className="min-w-0 space-y-3 p-3">
       <header className="flex flex-wrap items-center justify-between gap-2">
-        <div><h2 className="text-sm font-semibold">Gharpayy Local Auto Sync · Evidence review</h2><span className="text-xs text-muted-foreground">On-device · Unverified identity · CRM import disabled</span></div>
+        <div><h2 className="text-sm font-semibold">{towerMode ? "Tower Auto Sync" : "Gharpayy Local Auto Sync · Evidence review"}</h2><span className="text-xs text-muted-foreground">On-device · Unverified identity · CRM import disabled</span></div>
         <div className="flex flex-wrap gap-1">
           <Button size="sm" variant="outline" disabled={!ready} onClick={() => input.current?.click()}><Upload className="size-4" />Screenshots</Button>
           <Button size="sm" disabled={!ready || starting} onClick={() => (running ? stop() : void start())}><MonitorUp className="size-4" />{starting ? "Opening…" : running ? "Stop sharing" : "Share source"}</Button>
@@ -528,12 +579,22 @@ export function LocalAutoSyncPanel() {
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <Input aria-label="WhatsApp account" value={account} maxLength={90} disabled={running || starting || busy || pending > 0} onChange={(e) => setAccount(e.target.value)} className="h-8 max-w-52" />
         <Input aria-label="Local reviewer" placeholder="Local reviewer (unverified)" value={reviewer} maxLength={120} onChange={(e) => setReviewer(e.target.value)} className="h-8 max-w-52" />
-        <span role="status">{!ready ? "Opening local evidence…" : paused ? "Queue paused" : busy ? "Reading locally…" : confirmed ? "Sampling every 5s" : running ? "Preview only" : "Ready"} · {pending} queued · {stats?.records ?? 0} saved · {skipped} same-account duplicates skipped</span>
+        <span role="status">{!ready ? "Opening local evidence…" : paused ? "Queue paused" : busy ? "Reading locally…" : confirmed ? "Sampling every 5s" : running ? "Awaiting crop confirmation" : "Ready"} · {pending} queued · {stats?.records ?? 0} saved · {skipped} same-account duplicates skipped</span>
       </div>
       <p className="text-xs text-muted-foreground">An account label or confirmation cannot prove business ownership. Manual files are unverified inputs. Reviewed ≠ verified identity.</p>
+      {towerMode && <div className="space-y-2 rounded-lg border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-semibold">Automatic capture</h3><p className="text-xs text-muted-foreground">Share the WhatsApp tab once; keep scrolling manually while accepted frames go through the existing OCR queue.</p></div><span className="rounded-full border px-2 py-1 text-xs">{confirmed ? "Live" : running ? "Awaiting source" : "Idle"}</span></div>
+        <div className="grid gap-2 sm:grid-cols-3 text-xs">
+          <label>Sample interval<select aria-label="Capture interval" className="mt-1 h-8 w-full rounded border bg-card px-2" value={captureInterval} onChange={(e) => setCaptureInterval(Number(e.target.value))} disabled={running}><option value={2000}>2 seconds</option><option value={5000}>5 seconds</option><option value={10000}>10 seconds</option></select></label>
+          <label>Change detection<select aria-label="Change detection" className="mt-1 h-8 w-full rounded border bg-card px-2" value={changeDetection} onChange={(e) => setChangeDetection(e.target.value as "exact" | "regional")} disabled={running}><option value="exact">Exact pixels (safe)</option><option value="regional">Regional (not enabled)</option></select></label>
+          <div><span className="block">Capture status</span><span className="mt-1 block rounded border px-2 py-1">{paused ? "Queue paused" : confirmed ? `Sampling every ${captureInterval / 1000}s` : running ? "Waiting for capture" : "Stopped"}</span></div>
+        </div>
+        {changeDetection === "regional" && <p role="status" className="text-xs text-muted-foreground">Regional detection is displayed for parity but not enabled in this adapter; exact-pixel suppression remains active so legitimate small text changes are retained.</p>}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-6 text-xs"><span>Saved<br /><strong>{stats?.records ?? 0}</strong></span><span>Skipped<br /><strong>{skipped}</strong></span><span>Pending<br /><strong>{pending}</strong></span><span>Read<br /><strong>{stats ? Math.max(0, stats.records - stats.review - stats.failed - stats.trash) : "—"}</strong></span><span>Review<br /><strong>{stats?.review ?? 0}</strong></span><span>Failed<br /><strong>{stats?.failed ?? 0}</strong></span></div>
+      </div>}
       <div className={running ? "space-y-2 border p-2" : "hidden"}>
         <video ref={video} muted playsInline className="max-h-72 w-full object-contain" aria-label="Shared source preview" />
-        {source && <><p className="break-words text-xs">{source.label} · {source.width} × {source.height} · Crop pixels</p>{boundsInputs(crop, setCrop, confirmed, "Crop")}<Button size="sm" disabled={confirmed} onClick={retainSource}>Confirm crop & retain frames</Button></>}
+        {source && <><p className="break-words text-xs">{source.label} · {source.width} × {source.height} · Crop pixels</p>{boundsInputs(crop, updateCaptureCrop, false, "Crop")} {cropApplyButton}</>}
       </div>
       {currentFile && <p className="truncate text-xs text-muted-foreground">{currentFile}</p>}
       {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}

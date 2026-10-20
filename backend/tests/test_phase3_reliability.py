@@ -51,6 +51,19 @@ def test_time_inside_a_preview_never_creates_a_phantom_row():
     assert len(rows) == 1 and rows[0].message_preview == "see you at 5:00 pm"
 
 
+def test_same_phone_with_changed_message_is_kept_as_a_new_observation():
+    """A later scroll/capture must not collapse a changed visible observation by phone number."""
+    lines = [
+        make_line("+91 98765 43210", 140, 180), make_line("2:52 pm", 560, 184), make_line("Need a room", 140, 228),
+        make_line("+91 98765 43210", 140, 350), make_line("3:10 pm", 560, 354), make_line("Please call after 3", 140, 398),
+    ]
+    rows = parse_chat_list(lines, W, H).rows
+    assert len(rows) == 2
+    assert [row.phone_normalized for row in rows] == ["+919876543210", "+919876543210"]
+    assert [row.message_preview for row in rows] == ["Need a room", "Please call after 3"]
+    assert [row.visible_timestamp_text for row in rows] == ["2:52 pm", "3:10 pm"]
+
+
 def test_lines_without_word_geometry_are_not_split():
     line = OcrLine(text="+91 98765 43210 2:52 pm", confidence=90, left=140, top=180, right=500, bottom=208, words=[])
     assert split_trailing_timestamps([line]) == [line]

@@ -237,7 +237,7 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     return { track, getDisplayMedia, size, frames };
   }
 
-  it("requires a user click, shows preview and crop, samples frames and stops sharing", async () => {
+  it("starts full-frame sampling automatically and supports an optional custom crop", async () => {
     const { calls } = fakeBackend({ records: [] });
     const { track, getDisplayMedia } = fakeScreen();
     render(<LocalAutoSyncPanel />);
@@ -245,19 +245,52 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     expect(getDisplayMedia).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
     expect(await screen.findByText("screen:0 · 1440 × 900 · Crop pixels")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Preview only");
-    expect(calls.some((c) => c.url === "/api/ocr/extract")).toBe(false);
-    fireEvent.change(screen.getByLabelText("Crop x1"), { target: { value: "720" } });
-    fireEvent.click(screen.getByRole("button", { name: "Confirm crop & retain frames" }));
     await waitFor(() => expect(calls.some((c) => c.url === "/api/ocr/extract")).toBe(true));
-    const frame = calls.find((c) => c.url === "/api/ocr/extract")!;
+    fireEvent.change(screen.getByLabelText("Crop x1"), { target: { value: "720" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply custom crop" }));
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/ocr/extract")).toBe(true));
+    const frame = calls.findLast((c) => c.url === "/api/ocr/extract")!;
     expect(frame.headers).toMatchObject({ "x-source-mode": "screen-capture", "x-crop": "0,0,720,900", "x-original-width": "1440", "x-source-label": "screen%3A0" });
     fireEvent.click(screen.getByRole("button", { name: /Stop sharing/ }));
     expect(track.stop).toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /Share source/ })).toBeInTheDocument();
   });
 
-  it("pauses sampling when the source dimensions change", async () => {
+  it("accepts a reported 2940 × 1684 full-frame crop and queues a changed frame", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    const { frames } = fakeScreen(2940, 1684);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
+    expect(await screen.findByText("screen:0 · 2940 × 1684 · Crop pixels")).toBeInTheDocument();
+    expect(screen.getByLabelText("Crop x0")).toHaveValue(0);
+    expect(screen.getByLabelText("Crop y0")).toHaveValue(0);
+    expect(screen.getByLabelText("Crop x1")).toHaveValue(2940);
+    expect(screen.getByLabelText("Crop y1")).toHaveValue(1684);
+
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1));
+    const frame = calls.find((c) => c.url === "/api/ocr/extract")!;
+    expect(frame.headers["x-crop"]).toBe("0,0,2940,1684");
+    expect(frames.n).toBeGreaterThan(0);
+    expect(screen.getByRole("status")).toHaveTextContent("Sampling every 5s");
+  });
+
+  it("rejects unsafe full-frame inputs before sampling", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    fakeScreen(2940, 1684);
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
+    await screen.findByText("screen:0 · 2940 × 1684 · Crop pixels");
+    fireEvent.change(screen.getByLabelText("Crop x1"), { target: { value: "2941" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply custom crop" }));
+    expect(await screen.findByText("Source dimensions or crop mismatch. Reselect source/crop.")).toHaveAttribute("role", "alert");
+    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Awaiting crop confirmation");
+  });
+
+  it("adopts a default full-frame source resize without reconfirmation", async () => {
     fakeBackend({ records: [] });
     const { size } = fakeScreen();
     render(<LocalAutoSyncPanel />);
@@ -265,11 +298,10 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
     await screen.findByText(/Crop pixels/);
-    fireEvent.click(screen.getByRole("button", { name: "Confirm crop & retain frames" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sampling every 5s · 0 queued · 1 saved"));
     size.width = 1280;
     await act(async () => { vi.advanceTimersByTime(5000); });
-    expect(await screen.findByText(/Source paused: dimensions\/crop changed/)).toHaveAttribute("role", "alert");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sampling every 5s"));
   });
 
   it("explains when screen sharing is unavailable", async () => {
@@ -286,7 +318,6 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     await waitUntilReady();
     fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
     await screen.findByText(/Crop pixels/);
-    fireEvent.click(screen.getByRole("button", { name: "Confirm crop & retain frames" }));
     await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sampling every 5s · 0 queued"));
   }
@@ -312,7 +343,7 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     vi.setSystemTime(Date.now() + 60_000); // computer slept / tab throttled
     await act(async () => { vi.advanceTimersByTime(5000); });
     expect(await screen.findByText(/Capture gap of \d+s detected/)).toHaveAttribute("role", "alert");
-    expect(screen.getByRole("button", { name: "Confirm crop & retain frames" })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Awaiting crop confirmation");
   });
 
   it("does not sample a muted (minimized/hidden) source", async () => {
@@ -326,7 +357,7 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1);
   });
 
-  it("adopts a changed source size and resumes only after confirmation", async () => {
+  it("adopts a changed source size and resumes without confirmation", async () => {
     const { calls } = fakeBackend({ records: [] });
     const { size } = fakeScreen();
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -335,10 +366,23 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     await act(async () => { vi.advanceTimersByTime(5000); });
     expect(await screen.findByText("screen:0 · 1280 × 900 · Crop pixels")).toBeInTheDocument();
     expect(screen.getByLabelText("Crop x1")).toHaveValue(1280);
-    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Confirm crop & retain frames" }));
+    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2);
     await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2));
     expect(calls[calls.findLastIndex((c) => c.url === "/api/ocr/extract")].headers["x-crop"]).toBe("0,0,1280,900");
+  });
+
+  it("pauses a custom crop when a resize makes it unsafe", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    const { size } = fakeScreen();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await confirmedCapture(calls);
+    fireEvent.change(screen.getByLabelText("Crop x1"), { target: { value: "1200" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply custom crop" }));
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2));
+    size.width = 1000;
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    expect(await screen.findByText(/Source paused: dimensions\/crop changed/)).toHaveAttribute("role", "alert");
+    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2);
   });
 
   it("explains a cancelled or denied permission and leaves capture stopped", async () => {
