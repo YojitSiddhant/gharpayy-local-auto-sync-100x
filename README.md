@@ -15,11 +15,15 @@ The frontend lives in `app/` and `src/`; the backend lives in `backend/app/`, wi
 ```bash
 npm install
 cp .env.example .env
-python3 -m venv backend/.venv
+/opt/homebrew/bin/python3.11 -m venv backend/.venv
 backend/.venv/bin/pip install -r backend/requirements-dev.txt
 ```
 
 Set `DATABASE_URL` and `BACKEND_CORS_ORIGINS` in `.env` or `backend/.env`. The example uses a local MySQL URL and contains no credentials. MySQL is optional for the health-check foundation; no tables are created automatically.
+
+For local database setup, start the Homebrew MySQL service, create the `gharpayy_local_auto_sync_100x` database and a least-privilege development user, then place the resulting connection URL only in the ignored `.env` file. Verify with `SELECT 1`; do not run migrations until credentials are configured. The current machine has MySQL 9.7.1 installed, but the service is not currently accepting connections.
+
+Future OCR prerequisites are Tesseract, English language data, optional Hindi language data, pytesseract, Pillow, and OpenCV. Tesseract 5.5.3 with English data is available locally; Hindi data remains to be installed with `brew install tesseract-lang` when the package download is available.
 
 Run both services with `npm run dev`, or separately with `npm run dev:frontend` and `npm run dev:backend`. The frontend uses `NEXT_PUBLIC_API_BASE_URL` for the local FastAPI URL. No backend credentials are exposed to the browser.
 
