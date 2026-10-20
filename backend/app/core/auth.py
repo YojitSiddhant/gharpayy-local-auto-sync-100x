@@ -94,5 +94,9 @@ def require_super_admin(user: User = Depends(current_user), settings: Settings =
     return user
 
 
+def require_evidence_reader(user: User = Depends(current_user)) -> User:
+    return user
+
+
 def cookie_options(settings: Settings) -> dict[str, object]:
     return {"httponly": True, "secure": settings.app_env == "production", "samesite": "lax", "path": "/", "max_age": SESSION_DAYS * 86400}

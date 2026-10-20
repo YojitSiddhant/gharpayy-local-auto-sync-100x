@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import ApiError
+from backend.app.models.auth import User, UserRole
 from backend.app.models.ocr import EvidenceAuditEvent, OcrResult, OcrRowObservation, OcrTextCorrection, ScreenshotCapture, utcnow
 from backend.app.ocr.service import storage_usage
 from backend.app.schemas.ocr import iso, result_out, row_out
@@ -66,8 +67,11 @@ def current_text(capture: ScreenshotCapture) -> str:
     return capture.corrected_text if capture.corrected_text is not None else original_text(capture)
 
 
-def get_capture(db: Session, capture_id: str) -> ScreenshotCapture:
-    capture = db.get(ScreenshotCapture, capture_id)
+def get_capture(db: Session, capture_id: str, actor: User | None = None) -> ScreenshotCapture:
+    query = select(ScreenshotCapture).where(ScreenshotCapture.id == capture_id)
+    if actor is not None and actor.role != UserRole.SUPER_ADMIN:
+        query = query.where(ScreenshotCapture.created_by_user_id == actor.id)
+    capture = db.scalar(query)
     if capture is None:
         raise ApiError(404, "EVIDENCE_NOT_FOUND", "Saved evidence not found.")
     return capture
@@ -77,10 +81,12 @@ def _ordered():
     return func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at).desc()
 
 
-def list_evidence(db: Session, search: str = "", status_filter: str = "all") -> list[ScreenshotCapture]:
+def list_evidence(db: Session, search: str = "", status_filter: str = "all", actor: User | None = None) -> list[ScreenshotCapture]:
     if status_filter not in FILTERS:
         raise ApiError(400, "INVALID_FILTER", "Unknown review status filter.")
     query = select(ScreenshotCapture)
+    if actor is not None and actor.role != UserRole.SUPER_ADMIN:
+        query = query.where(ScreenshotCapture.created_by_user_id == actor.id)
     trashed = ScreenshotCapture.trashed_at.is_not(None)
     conditions = {
         "all": ~trashed,
@@ -165,6 +171,25 @@ def serialize_summary(capture: ScreenshotCapture) -> dict[str, Any]:
         "file_name": capture.original_filename, "status": ui_status(capture), "trashed": capture.trashed_at is not None,
         "account_label": capture.account_label, "captured_at": iso(capture.captured_at or capture.received_at),
     }
+
+
+def serialize_safe_detail(db: Session, capture: ScreenshotCapture) -> dict[str, Any]:
+    """Operational-user response: extracted chat content only, with diagnostics removed."""
+    result = latest_result(capture)
+    rows = []
+    for row in (result.rows if result else []):
+        rows.append({
+            "position": row.position,
+            "display_header_text": row.display_header_text,
+            "phone": {"raw": None, "normalized": None, "status": row.phone_status},
+            "message_preview": row.message_preview,
+            "preview_truncated": row.preview_truncated,
+            "visible_timestamp_text": row.visible_timestamp_text,
+            "timestamp_kind": row.timestamp_kind,
+            "identity_status": "unverified",
+            "review_status": "needs_review",
+        })
+    return {**serialize_summary(capture), "text": current_text(capture), "identity_status": "unverified", "rows": rows, "result_status": result.status if result else None}
 
 
 def _audit_trail(db: Session, capture_id: str) -> list[EvidenceAuditEvent]:

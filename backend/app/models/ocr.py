@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,7 @@ class ScreenshotCapture(Base):
         CheckConstraint("status IN ('processing','completed','failed')", name="ck_screenshot_captures_status"),
         CheckConstraint(f"review_status = '{REVIEW_ONLY}'", name="ck_screenshot_captures_review_only"),
         CheckConstraint("review_state IN ('review','reviewed')", name="ck_screenshot_captures_review_state"),
+        Index("ix_screenshot_captures_owner", "created_by_user_id", "zone_id", "received_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -79,6 +80,10 @@ class ScreenshotCapture(Base):
     # Optimistic-concurrency token (migration 20261020_0003). Every evidence mutation increments it;
     # edits must present the revision they were based on, so stale tabs cannot silently overwrite.
     revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Phase 9C ownership. Nullable intentionally preserves legacy evidence as unassigned.
+    zone_id: Mapped[str | None] = mapped_column(ForeignKey("zones.id", ondelete="RESTRICT"), index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    capture_session_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     results: Mapped[list[OcrResult]] = relationship(back_populates="capture", order_by="OcrResult.attempt", cascade="all, delete-orphan")
     corrections: Mapped[list[OcrTextCorrection]] = relationship(back_populates="capture", order_by="OcrTextCorrection.created_at", cascade="all, delete-orphan")

@@ -16,7 +16,14 @@ from backend.app.ocr.image_validation import ImageLimits, validate_image
 from backend.app.ocr.service import CaptureMeta, EngineFactory, default_engine, process_screenshot
 from backend.app.schemas.ocr import build_extract_response
 
-router = APIRouter(prefix="/ocr", tags=["ocr"], dependencies=[Depends(require_local_api_access), Depends(require_super_admin)])
+def require_capture_session(settings: Settings = Depends(get_settings)) -> None:
+    # Phase 9E owns capture-session creation and zone selection. Until then, deny all new uploads
+    # rather than accepting a browser-provided zone/account label as ownership.
+    if settings.app_env != "test":
+        raise ApiError(409, "CAPTURE_SESSION_REQUIRED", "A server-created capture session is required before uploading evidence.")
+
+
+router = APIRouter(prefix="/ocr", tags=["ocr"], dependencies=[Depends(require_local_api_access), Depends(require_super_admin), Depends(require_capture_session)])
 
 ACCOUNT_HEADER = "x-account-label"
 FILENAME_HEADER = "x-filename"
