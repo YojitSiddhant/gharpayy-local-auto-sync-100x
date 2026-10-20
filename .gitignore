@@ -38,6 +38,15 @@ yarn-error.log*
 /backend/.venv/
 # private OCR screenshot evidence (never commit)
 /backend/.private_storage/
+# ML datasets and artifacts are private by default; only the committed synthetic
+# fixture and directory placeholders below are allowlisted.
+/backend/training/datasets/*
+!/backend/training/datasets/.gitkeep
+!/backend/training/datasets/synthetic/
+!/backend/training/datasets/synthetic/labels.json
+/backend/training/private/
+/backend/training/outputs/
+/backend/model_artifacts/
 __pycache__/
 .pytest_cache/
 
