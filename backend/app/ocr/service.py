@@ -19,6 +19,7 @@ from backend.app.ocr.engine import OcrError, OcrTimeoutError, OcrUnavailableErro
 from backend.app.ocr.image_validation import ValidatedImage, decode_rgb
 from backend.app.ocr.storage import store_evidence
 from backend.app.ocr.whatsapp_parser import PARSER_VERSION, parse_chat_list
+from backend.app.ml.shadow import run_shadow_prediction
 
 EngineFactory = Callable[[Settings], TesseractEngine]
 
@@ -150,6 +151,13 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
         capture.results.append(result)
         db.commit()
         raise ApiError(_OCR_ERROR_STATUS.get(type(exc), 500), code, _OCR_ERROR_MESSAGE.get(code, "OCR failed."), {"capture_id": capture.id}) from None
+
+    if settings.ml_mode == "shadow":
+        # Deliberately discard shadow output: it is diagnostic-only and cannot alter OCR.
+        try:
+            run_shadow_prediction(output, parsed, image.width, image.height, settings)
+        except Exception:  # noqa: BLE001 - an optional experiment must never fail OCR
+            pass
 
     result.status = "completed"
     result.engine_version = output.engine_version

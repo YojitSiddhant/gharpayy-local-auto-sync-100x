@@ -1,5 +1,7 @@
 from functools import lru_cache
 
+from typing import Literal
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,6 +25,13 @@ class Settings(BaseSettings):
     ocr_tesseract_psm: int = 11
     ocr_max_concurrency: int = 1
     ocr_queue_wait_seconds: float = 10.0
+
+    # Experimental local classifier. Shadow mode is opt-in and never changes OCR output.
+    ml_mode: Literal["off", "shadow"] = "off"
+    ml_artifact_dir: str = "backend/model_artifacts/phase7d-row-classifier"
+    ml_trusted_artifact_root: str = "backend/model_artifacts"
+    ml_inference_timeout_seconds: float = 0.1
+    ml_abstain_threshold: float = 0.65
 
     # Private evidence storage. Must stay outside public/static directories.
     screenshot_storage_dir: str = "backend/.private_storage/screenshots"
