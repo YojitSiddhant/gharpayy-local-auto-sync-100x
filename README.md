@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Gharpayy Local Auto Sync 100X
 
-## Getting Started
+Phase 1 foundation for a local-first operations system: Next.js frontend, FastAPI backend, and MySQL-ready persistence configuration.
 
-First, run the development server:
+## Stack and structure
+
+- Next.js 16 App Router, React, TypeScript, Tailwind CSS, ESLint, Zod
+- FastAPI, Uvicorn, SQLAlchemy, Alembic, PyMySQL, Pydantic settings
+- Vitest, React Testing Library, pytest, and GitHub Actions CI
+
+The frontend lives in `app/` and `src/`; the backend lives in `backend/app/`, with tests in `backend/tests/` and migrations in `backend/alembic/`.
+
+## Local setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements-dev.txt
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Set `DATABASE_URL` and `BACKEND_CORS_ORIGINS` in `.env` or `backend/.env`. The example uses a local MySQL URL and contains no credentials. MySQL is optional for the health-check foundation; no tables are created automatically.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Run both services with `npm run dev`, or separately with `npm run dev:frontend` and `npm run dev:backend`. The frontend uses `NEXT_PUBLIC_API_BASE_URL` for the local FastAPI URL. No backend credentials are exposed to the browser.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Verification
 
-## Learn More
+```bash
+npm run lint
+npm test
+npm run build
+backend/.venv/bin/pytest backend/tests
+```
 
-To learn more about Next.js, take a look at the following resources:
+`npm run audit` reports dependency vulnerabilities without applying fixes.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Current limitations and future architecture
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Phase 1 does not implement OCR, ML, screenshot capture, review workflows, CRM integration, dashboards, or business-domain tables. Future phases can add isolated OCR and capture services under `backend/app/ocr/` and `backend/app/capture/`, expose reviewed results through versioned APIs, and add domain migrations after the persistence contract is agreed.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Reference projects are kept outside this repository and are read-only inputs: `lead-loved-flow` for visual direction and `Gharpayy_Local_Sync_FINAL` for future OCR dependency research. Production `Gharpayy-Ops` is not connected.

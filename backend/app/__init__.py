@@ -1,0 +1,1 @@
+"""Gharpayy backend application package."""
