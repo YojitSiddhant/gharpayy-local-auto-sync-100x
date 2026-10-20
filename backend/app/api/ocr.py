@@ -9,13 +9,14 @@ from starlette.concurrency import run_in_threadpool
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
+from backend.app.core.auth import require_super_admin
 from backend.app.db.session import get_db
 from backend.app.ocr.concurrency import run_ocr_bounded
 from backend.app.ocr.image_validation import ImageLimits, validate_image
 from backend.app.ocr.service import CaptureMeta, EngineFactory, default_engine, process_screenshot
 from backend.app.schemas.ocr import build_extract_response
 
-router = APIRouter(prefix="/ocr", tags=["ocr"], dependencies=[Depends(require_local_api_access)])
+router = APIRouter(prefix="/ocr", tags=["ocr"], dependencies=[Depends(require_local_api_access), Depends(require_super_admin)])
 
 ACCOUNT_HEADER = "x-account-label"
 FILENAME_HEADER = "x-filename"

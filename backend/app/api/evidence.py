@@ -14,6 +14,7 @@ from backend.app.api.ocr import get_engine_factory, image_limits
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
+from backend.app.core.auth import require_super_admin
 from backend.app.db.session import get_db
 from backend.app.models.ocr import EvidenceAuditEvent
 from backend.app.ocr import evidence as ev
@@ -28,7 +29,7 @@ def limit_json_body(request: Request, settings: Settings = Depends(get_settings)
         raise ApiError(413, "BODY_TOO_LARGE", "Request body is missing a length or too large.")
 
 
-router = APIRouter(prefix="/evidence", tags=["evidence"], dependencies=[Depends(require_local_api_access), Depends(limit_json_body)])
+router = APIRouter(prefix="/evidence", tags=["evidence"], dependencies=[Depends(require_local_api_access), Depends(require_super_admin), Depends(limit_json_body)])
 NO_STORE = {"Cache-Control": "no-store"}
 
 
