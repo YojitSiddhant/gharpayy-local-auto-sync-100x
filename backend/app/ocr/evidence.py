@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -82,12 +83,20 @@ def _ordered():
     return func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at).desc()
 
 
-def list_evidence(db: Session, search: str = "", status_filter: str = "all", actor: User | None = None) -> list[ScreenshotCapture]:
+def list_evidence(db: Session, search: str = "", status_filter: str = "all", actor: User | None = None, *, zone_id: str | None = None, user_id: str | None = None, date_from: datetime | None = None, date_to: datetime | None = None, offset: int = 0, limit: int = LIST_LIMIT) -> list[ScreenshotCapture]:
     if status_filter not in FILTERS:
         raise ApiError(400, "INVALID_FILTER", "Unknown review status filter.")
     query = select(ScreenshotCapture)
     if actor is not None and actor.role != UserRole.SUPER_ADMIN:
         query = query.where(ScreenshotCapture.created_by_user_id == actor.id)
+    if zone_id:
+        query = query.where(ScreenshotCapture.zone_id == zone_id)
+    if user_id:
+        query = query.where(ScreenshotCapture.created_by_user_id == user_id)
+    if date_from:
+        query = query.where(func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at) >= date_from)
+    if date_to:
+        query = query.where(func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at) < date_to)
     trashed = ScreenshotCapture.trashed_at.is_not(None)
     conditions = {
         "all": ~trashed,
@@ -113,7 +122,7 @@ def list_evidence(db: Session, search: str = "", status_filter: str = "all", act
                 OcrResult.capture_id == ScreenshotCapture.id, OcrRowObservation.ocr_result_id == OcrResult.id,
                 OcrRowObservation.phone_candidate_normalized.like(f"%{digits}%")))
         query = query.where(or_(*text_match))
-    return list(db.scalars(query.order_by(_ordered()).limit(LIST_LIMIT)))
+    return list(db.scalars(query.order_by(_ordered()).offset(max(0, offset)).limit(min(max(1, limit), LIST_LIMIT))))
 
 
 def evidence_stats(db: Session, settings: Settings) -> dict[str, Any]:

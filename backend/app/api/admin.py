@@ -1,13 +1,17 @@
-from fastapi import APIRouter, Depends, Request
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.app.core.auth import hash_password, normalize_username, require_super_admin, revoke_sessions
+from backend.app.core.config import get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
 from backend.app.db.session import get_db
 from backend.app.models.auth import AdminAuditEvent, User, UserRole, Zone, utcnow
+from backend.app.models.ocr import OcrRowObservation, ScreenshotCapture
+from backend.app.ocr import evidence as ev
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_local_api_access), Depends(require_super_admin)])
 
@@ -114,3 +118,23 @@ def reassign_zone(user_id: str, body: ZoneAssignment, db: Session = Depends(get_
     if not user or user.role != UserRole.AUTO_SYNC_USER: raise ApiError(404, "USER_NOT_FOUND", "Operational user not found.")
     if not zone or not zone.is_active: raise ApiError(409, "ZONE_NOT_ACTIVE", "Users must be assigned to an active zone.")
     old = user.zone_id; user.zone_id = zone.id; audit(db, actor, "user.zone_reassigned", "user", user.id, {"old_zone_id": old, "new_zone_id": zone.id}); db.commit(); return user_out(user)
+
+
+@router.get("/ocr-review")
+def ocr_review(zone_id: str | None = None, user_id: str | None = None, date_from: datetime | None = None,
+               date_to: datetime | None = None, status: str = Query("all"), search: str = Query("", max_length=200),
+               page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), db: Session = Depends(get_db)):
+    items = ev.list_evidence(db, search, status, None, zone_id=zone_id, user_id=user_id, date_from=date_from, date_to=date_to, offset=(page - 1) * page_size, limit=page_size)
+    return {"items": [ev.serialize_summary(c) for c in items], "page": page, "page_size": page_size, "has_more": len(items) == page_size}
+
+
+@router.get("/ml-analytics")
+def ml_analytics(db: Session = Depends(get_db), settings=Depends(get_settings)):
+    today = datetime.now(timezone.utc).replace(tzinfo=None).replace(hour=0, minute=0, second=0, microsecond=0)
+    total = int(db.scalar(select(func.count()).select_from(ScreenshotCapture)) or 0)
+    today_count = int(db.scalar(select(func.count()).select_from(ScreenshotCapture).where(ScreenshotCapture.received_at >= today)) or 0)
+    by_zone = [{"zone_id": zid, "count": int(count)} for zid, count in db.execute(select(ScreenshotCapture.zone_id, func.count()).where(ScreenshotCapture.zone_id.is_not(None)).group_by(ScreenshotCapture.zone_id)).all()]
+    processing = {status: int(db.scalar(select(func.count()).select_from(ScreenshotCapture).where(ScreenshotCapture.status == status)) or 0) for status in ("processing", "completed", "failed")}
+    reviewed = int(db.scalar(select(func.count()).select_from(ScreenshotCapture).where(ScreenshotCapture.review_state == "reviewed")) or 0)
+    warnings = int(db.scalar(select(func.count()).select_from(OcrRowObservation).where(func.json_length(OcrRowObservation.warnings) > 0)) or 0)
+    return {"captures": {"total": total, "today": today_count, "by_zone": by_zone}, "ocr": {"status": processing, "warning_rows": warnings}, "review": {"reviewed": reviewed, "unreviewed": max(0, total - reviewed)}, "ml": {"mode": settings.ml_mode.upper(), "accuracy": None, "accuracy_note": "Not yet measured on approved real-world labels", "evaluation_type": "synthetic-only or unavailable", "training_runs": [], "current_artifact": None}}

@@ -4,7 +4,7 @@ import { ALLOWED_IMAGE_TYPES, CLIENT_HEADER, CLIENT_HEADER_VALUE, MAX_UPLOAD_BYT
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals"]);
-const QUERY_PARAMS = ["search", "status", "include_trash"];
+const QUERY_PARAMS = ["search", "status", "include_trash", "zone_id", "user_id", "date_from", "date_to", "page", "page_size"];
 export const JSON_BODY_LIMIT = 1024 * 1024;
 export const UPLOAD_METADATA_HEADERS = [
   "x-account-label", "x-filename", "x-source-mode", "x-captured-at", "x-source-label", "x-capture-session-id",
@@ -68,7 +68,7 @@ export function resolveEvidencePath(method: string, segments: string[], search: 
   if (segments[0] === "auth" && (method === "POST" || method === "GET") && (segments[1] === "login" || segments[1] === "logout" || segments[1] === "me") && segments.length === 2) return `auth/${segments[1]}`;
   if (segments[0] === "capture-sessions" && ((method === "GET" && segments.length === 2 && segments[1] === "current") || (method === "POST" && (segments.length === 1 || (segments.length === 3 && segments[2] === "stop"))))) return segments.join("/");
   if (segments[0] === "admin" && segments.length >= 2 && segments.length <= 4 && ["GET", "POST", "PATCH"].includes(method)) {
-    const allowed = /^admin\/(zones|users)(\/[^/]+)?(\/(disable|enable|password|zone))?$/.test(segments.join("/"));
+    const allowed = /^admin\/(zones|users)(\/[^/]+)?(\/(disable|enable|password|zone))?$/.test(segments.join("/")) || (method === "GET" && (segments[1] === "ocr-review" || segments[1] === "ml-analytics") && segments.length === 2);
     if (allowed) return segments.join("/");
   }
   if (segments[0] !== "evidence" || segments.length > 3) return null;
