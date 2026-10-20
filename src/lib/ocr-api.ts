@@ -124,6 +124,7 @@ export type CaptureMetadata = {
   sourceLabel?: string;
   originalDimensions?: { width: number; height: number };
   crop?: { x0: number; y0: number; x1: number; y1: number };
+  captureSessionId?: string;
 };
 
 function metadataHeaders(meta?: CaptureMetadata): Record<string, string> {
@@ -135,6 +136,7 @@ function metadataHeaders(meta?: CaptureMetadata): Record<string, string> {
     headers["x-original-height"] = String(meta.originalDimensions.height);
   }
   if (meta.crop) headers["x-crop"] = [meta.crop.x0, meta.crop.y0, meta.crop.x1, meta.crop.y1].join(",");
+  if (meta.captureSessionId) headers["x-capture-session-id"] = meta.captureSessionId;
   return headers;
 }
 

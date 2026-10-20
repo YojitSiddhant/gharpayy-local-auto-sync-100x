@@ -14,6 +14,8 @@ from backend.app.api.ocr import get_engine_factory, image_limits
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
+from backend.app.core.auth import current_user, require_evidence_reader, require_super_admin
+from backend.app.models.auth import User, UserRole
 from backend.app.db.session import get_db
 from backend.app.models.ocr import EvidenceAuditEvent
 from backend.app.ocr import evidence as ev
@@ -28,7 +30,7 @@ def limit_json_body(request: Request, settings: Settings = Depends(get_settings)
         raise ApiError(413, "BODY_TOO_LARGE", "Request body is missing a length or too large.")
 
 
-router = APIRouter(prefix="/evidence", tags=["evidence"], dependencies=[Depends(require_local_api_access), Depends(limit_json_body)])
+router = APIRouter(prefix="/evidence", tags=["evidence"], dependencies=[Depends(require_local_api_access), Depends(require_evidence_reader), Depends(limit_json_body)])
 NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -84,42 +86,45 @@ def _json(content, status: int = 200) -> JSONResponse:
 
 @router.get("")
 def list_saved(search: str = Query(default="", max_length=200), status: str = Query(default="all"),
-               db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+               db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(current_user)):
     recover_stale_processing(db, settings)  # orphaned "processing" captures become retryable failures
-    return _json({"items": [ev.serialize_summary(c) for c in ev.list_evidence(db, search, status)]})
+    return _json({"items": [ev.serialize_summary(c) for c in ev.list_evidence(db, search, status, actor)]})
 
 
 @router.get("/stats")
-def stats(db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def stats(db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(current_user)):
+    if actor.role != UserRole.SUPER_ADMIN:
+        return _json({"review": 0, "reviewed": 0, "failed": 0, "trash": 0, "records": 0, "duplicates": 0})
     return _json(ev.evidence_stats(db, settings))
 
 
 @router.get("/export")
-def export(include_trash: bool = False, db: Session = Depends(get_db)):
+def export(include_trash: bool = False, db: Session = Depends(get_db), actor: User = Depends(require_super_admin)):
     return JSONResponse(content=ev.export_evidence(db, include_trash), headers={**NO_STORE, "Content-Disposition": 'attachment; filename="gharpayy-local-review.json"'})
 
 
 @router.post("/purge-trash")
-def purge(body: PurgeBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def purge(body: PurgeBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(require_super_admin)):
     return _json({"purged": ev.purge_trash(db, settings, body.reviewer)})
 
 
 @router.get("/{capture_id}")
-def detail(capture_id: str, db: Session = Depends(get_db)):
-    return _json(ev.serialize_detail(db, ev.get_capture(db, capture_id)))
+def detail(capture_id: str, db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(current_user)):
+    capture = ev.get_capture(db, capture_id, actor)
+    return _json(ev.serialize_detail(db, capture, settings) if actor.role == UserRole.SUPER_ADMIN else ev.serialize_safe_detail(db, capture, settings))
 
 
 @router.get("/{capture_id}/image")
-def image(capture_id: str, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    capture = ev.get_capture(db, capture_id)
+def image(capture_id: str, db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     data = ev.evidence_path(settings, capture).read_bytes()
     return Response(content=data, media_type=capture.mime_type, headers={
         **NO_STORE, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'", "Content-Disposition": "inline"})
 
 
 @router.patch("/{capture_id}")
-def update(capture_id: str, body: EvidencePatch, db: Session = Depends(get_db)):
-    capture = ev.get_capture(db, capture_id)
+def update(capture_id: str, body: EvidencePatch, db: Session = Depends(get_db), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     names = [(n.position, n.name) for n in body.observed_names] if body.observed_names else None
     ev.update_evidence(db, capture, reviewer=body.reviewer, screenshot_label=body.screenshot_label, text=body.text,
                        observed_names=names, expected_revision=body.expected_revision)
@@ -127,37 +132,37 @@ def update(capture_id: str, body: EvidencePatch, db: Session = Depends(get_db)):
 
 
 @router.post("/{capture_id}/review")
-def review(capture_id: str, body: ReviewBody, db: Session = Depends(get_db)):
-    capture = ev.get_capture(db, capture_id)
+def review(capture_id: str, body: ReviewBody, db: Session = Depends(get_db), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     ev.mark_reviewed(db, capture, body.reviewer, body.expected_revision)
     return _json(ev.serialize_detail(db, capture))
 
 
 @router.post("/{capture_id}/trash")
-def trash(capture_id: str, body: ReasonBody, db: Session = Depends(get_db)):
-    capture = ev.get_capture(db, capture_id)
+def trash(capture_id: str, body: ReasonBody, db: Session = Depends(get_db), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     ev.set_trash(db, capture, body.reason, body.reviewer, restore=False, expected_revision=body.expected_revision)
     return _json(ev.serialize_detail(db, capture))
 
 
 @router.post("/{capture_id}/restore")
-def restore(capture_id: str, body: ReasonBody, db: Session = Depends(get_db)):
-    capture = ev.get_capture(db, capture_id)
+def restore(capture_id: str, body: ReasonBody, db: Session = Depends(get_db), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     ev.set_trash(db, capture, body.reason, body.reviewer, restore=True, expected_revision=body.expected_revision)
     return _json(ev.serialize_detail(db, capture))
 
 
 @router.post("/{capture_id}/proposals")
-def proposals(capture_id: str, body: ProposalBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    capture = ev.get_capture(db, capture_id)
+def proposals(capture_id: str, body: ProposalBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     ev.add_region_proposals(db, settings, capture, body.kind, body.region.model_dump())
     return _json(ev.serialize_detail(db, capture))
 
 
 @router.post("/{capture_id}/retry")
 async def retry(capture_id: str, body: RetryBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings),
-                engine_factory: EngineFactory = Depends(get_engine_factory)):
-    capture = ev.get_capture(db, capture_id)
+                engine_factory: EngineFactory = Depends(get_engine_factory), actor: User = Depends(require_super_admin)):
+    capture = ev.get_capture(db, capture_id, actor)
     if capture.status != "failed" or capture.trashed_at is not None:
         raise ApiError(409, "NOT_RETRYABLE", "Only failed, active readings can be retried.")
     image = validate_image(ev.evidence_path(settings, capture).read_bytes(), capture.mime_type, image_limits(settings))

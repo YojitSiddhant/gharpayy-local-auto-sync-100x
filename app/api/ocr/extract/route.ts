@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   if (body === null) return jsonError(413, "UPLOAD_TOO_LARGE", "The screenshot exceeds the 10 MB limit.");
   if (body.byteLength === 0) return jsonError(400, "EMPTY_UPLOAD", "The uploaded file is empty.");
 
-  const headers: Record<string, string> = { "content-type": request.headers.get("content-type") ?? "" };
+  const headers: Record<string, string> = { "content-type": request.headers.get("content-type") ?? "", cookie: request.headers.get("cookie") ?? "" };
   for (const name of UPLOAD_METADATA_HEADERS) {
     const value = request.headers.get(name);
     if (value !== null) headers[name] = value;

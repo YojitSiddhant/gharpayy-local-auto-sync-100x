@@ -69,6 +69,8 @@ export const detailSchema = summarySchema.extend({
     kind: z.enum(["label", "unread"]), text: z.string(), bounds: boundsSchema, color: z.string().nullable(),
     color_meaning: z.literal("unknown"), count: z.number().nullable(), status: z.literal("tentative"),
   })),
+  cross_zone_duplicate: z.object({ possible: z.boolean(), zone_count: z.number(), zones: z.array(z.string()), observations: z.array(z.object({ capture_id: z.string(), zone_name: z.string(), captured_at: z.string().nullable(), position: z.number(), status: z.string(), quarantined: z.boolean() })) }).optional(),
+  possible_duplicate: z.boolean().optional(),
 });
 
 export type EvidenceSummary = z.infer<typeof summarySchema>;

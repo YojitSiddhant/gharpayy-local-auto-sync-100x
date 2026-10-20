@@ -71,6 +71,9 @@ const recordFor = (c: EvidenceSummary): EvidenceDetail => ({ ...detail, ...c, ro
 function fakeApi(initial: EvidenceSummary[]) {
   const state = { records: initial };
   const fetchMock = vi.fn(async (input: string) => {
+    if (input === "/api/local/capture-sessions/current") return jsonResponse({ session: null });
+    if (input === "/api/local/capture-sessions") return jsonResponse({ session: { id: "session-1", status: "active", zone: { id: "zone-1", name: "central students" }, expires_at: "2026-10-20T18:00:00Z" } });
+    if (String(input).startsWith("/api/local/capture-sessions/session-1/stop")) return jsonResponse({ session: { id: "session-1", status: "stopped" } });
     const path = String(input).replace("/api/local/evidence", "");
     if (path.startsWith("?")) return jsonResponse({ items: [...state.records].reverse() });
     const image = path.match(/^\/(.+)\/image$/);
@@ -182,7 +185,7 @@ describe("TowerAutoSyncPage capture strip and extracted chats", () => {
     render(<TowerAutoSyncPage />);
     expect(await screen.findByText("Message from cap-1")).toBeInTheDocument();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /Start Auto Sync/ })));
-    expect(await screen.findByText(/Awaiting Stop/)).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(/Awaiting Stop/);
     expect(screen.queryByRole("list", { name: "All extracted chats" })).not.toBeInTheDocument();
     expect(cards()).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));

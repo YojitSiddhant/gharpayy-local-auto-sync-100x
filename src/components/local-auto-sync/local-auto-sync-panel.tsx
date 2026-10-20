@@ -619,6 +619,7 @@ export function LocalAutoSyncPanel({ towerMode = false }: { towerMode?: boolean 
         <select aria-label="Captured screenshot" className="h-8 w-full min-w-0 rounded border bg-card px-2 text-xs" value={activeId} onChange={(e) => { void flush(); setSelected(e.target.value); }}>{records.map((r) => <option key={r.id} value={r.id}>{r.label} · {r.status}{r.trashed ? " · trash" : ""}</option>)}</select>
         {shown ? <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,40fr)_minmax(0,60fr)]">
           <div className="min-w-0 space-y-2">
+            {shown.cross_zone_duplicate?.possible && <div className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">Possible cross-zone duplicate — Seen in {shown.cross_zone_duplicate.zone_count} zones: {shown.cross_zone_duplicate.zones.join(", ")}</div>}
             {/* eslint-disable-next-line @next/next/no-img-element -- protected same-origin object URL, never a public file */}
             <img src={imageUrl || undefined} alt="Local screenshot evidence" className="max-h-[70vh] w-full border object-contain" />
             <Input aria-label="Screenshot label" value={draft.label ?? shown.screenshot_label ?? shown.file_name ?? ""} maxLength={255} onChange={(e) => scheduleSave({ label: e.target.value })} />

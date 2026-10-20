@@ -1,0 +1,12 @@
+"use client";
+import { useEffect, useState } from "react";
+
+type Zone = { id: string; name: string; is_active: boolean };
+const headers = { "x-gharpayy-client": "local-auto-sync" };
+export function ZoneControl() {
+  const [zones, setZones] = useState<Zone[]>([]); const [role, setRole] = useState<string | null>(null); const [assigned, setAssigned] = useState<string | null>(null); const [selected, setSelected] = useState(""); const [active, setActive] = useState(false);
+  useEffect(() => { const load = async () => { const me = await fetch("/api/local/auth/me", { headers }); if (!me.ok) return; const user = (await me.json()).user; setRole(user.role); setAssigned(user.zone_name); const current = await fetch("/api/local/capture-sessions/current", { headers }); const currentBody = current.ok ? await current.json() : {}; setActive(Boolean(currentBody.session)); if (currentBody.session) setSelected(currentBody.session.zone.id); const zonesResponse = await fetch("/api/local/admin/zones", { headers }); if (zonesResponse.ok) { const items = (await zonesResponse.json()).items ?? []; setZones(items.filter((zone: Zone) => zone.is_active)); if (!currentBody.session) setSelected(window.localStorage.getItem("gharpayy-selected-zone") ?? (items[0]?.id ?? "")); } }; const started = () => setActive(true); const stopped = () => setActive(false); void load(); window.addEventListener("gharpayy-capture-started", started); window.addEventListener("gharpayy-capture-stopped", stopped); return () => { window.removeEventListener("gharpayy-capture-started", started); window.removeEventListener("gharpayy-capture-stopped", stopped); }; }, []);
+  function change(value: string) { setSelected(value); window.localStorage.setItem("gharpayy-selected-zone", value); window.dispatchEvent(new CustomEvent("gharpayy-zone-selected", { detail: value })); }
+  if (!role) return null;
+  return <div className="mx-auto w-full max-w-[1920px] px-4 pt-4 sm:px-6 lg:px-8 2xl:px-12">{role === "SUPER_ADMIN" ? <label className="flex max-w-sm items-center gap-2 text-sm"><span className="font-medium">Capture zone</span><select aria-label="Capture zone" value={selected} disabled={active} onChange={e => change(e.target.value)} className="rounded border bg-card px-2 py-1"><option value="">Select a zone</option>{zones.map(zone => <option key={zone.id} value={zone.id}>{zone.name}</option>)}</select>{active && <span className="text-xs text-muted-foreground">Locked during capture</span>}</label> : <p className="text-sm">Assigned zone: <strong>{assigned ?? "Unavailable"}</strong></p>}</div>;
+}

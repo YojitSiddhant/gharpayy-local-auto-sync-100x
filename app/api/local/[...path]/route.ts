@@ -15,7 +15,7 @@ async function handle(request: Request, context: Context) {
   const target = resolveEvidencePath(method, path, new URL(request.url).searchParams);
   if (!target) return jsonError(404, "NOT_FOUND", "Unknown local API path.");
 
-  if (method === "GET") return forwardToBackend(target, { method, headers: {}, timeoutMs: 30_000 });
+  if (method === "GET") return forwardToBackend(target, { method, headers: { cookie: request.headers.get("cookie") ?? "" }, timeoutMs: 30_000 });
 
   const type = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (type !== "application/json") return jsonError(415, "UNSUPPORTED_MEDIA_TYPE", "Expected a JSON request body.");
@@ -23,7 +23,7 @@ async function handle(request: Request, context: Context) {
   if (body === null) return jsonError(413, "BODY_TOO_LARGE", "Request body is too large.");
   return forwardToBackend(target, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", cookie: request.headers.get("cookie") ?? "" },
     body: body.byteLength ? body : new TextEncoder().encode("{}"),
     timeoutMs: target.endsWith("/retry") ? 90_000 : 30_000,
   });

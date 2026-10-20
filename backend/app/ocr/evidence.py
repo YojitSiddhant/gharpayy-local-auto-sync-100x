@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import ApiError
+from backend.app.models.auth import User, UserRole, Zone
 from backend.app.models.ocr import EvidenceAuditEvent, OcrResult, OcrRowObservation, OcrTextCorrection, ScreenshotCapture, utcnow
+from backend.app.ocr.duplicate_detection import key_configured
 from backend.app.ocr.service import storage_usage
 from backend.app.schemas.ocr import iso, result_out, row_out
 
@@ -66,8 +69,11 @@ def current_text(capture: ScreenshotCapture) -> str:
     return capture.corrected_text if capture.corrected_text is not None else original_text(capture)
 
 
-def get_capture(db: Session, capture_id: str) -> ScreenshotCapture:
-    capture = db.get(ScreenshotCapture, capture_id)
+def get_capture(db: Session, capture_id: str, actor: User | None = None) -> ScreenshotCapture:
+    query = select(ScreenshotCapture).where(ScreenshotCapture.id == capture_id)
+    if actor is not None and actor.role != UserRole.SUPER_ADMIN:
+        query = query.where(ScreenshotCapture.created_by_user_id == actor.id)
+    capture = db.scalar(query)
     if capture is None:
         raise ApiError(404, "EVIDENCE_NOT_FOUND", "Saved evidence not found.")
     return capture
@@ -77,10 +83,20 @@ def _ordered():
     return func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at).desc()
 
 
-def list_evidence(db: Session, search: str = "", status_filter: str = "all") -> list[ScreenshotCapture]:
+def list_evidence(db: Session, search: str = "", status_filter: str = "all", actor: User | None = None, *, zone_id: str | None = None, user_id: str | None = None, date_from: datetime | None = None, date_to: datetime | None = None, offset: int = 0, limit: int = LIST_LIMIT) -> list[ScreenshotCapture]:
     if status_filter not in FILTERS:
         raise ApiError(400, "INVALID_FILTER", "Unknown review status filter.")
     query = select(ScreenshotCapture)
+    if actor is not None and actor.role != UserRole.SUPER_ADMIN:
+        query = query.where(ScreenshotCapture.created_by_user_id == actor.id)
+    if zone_id:
+        query = query.where(ScreenshotCapture.zone_id == zone_id)
+    if user_id:
+        query = query.where(ScreenshotCapture.created_by_user_id == user_id)
+    if date_from:
+        query = query.where(func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at) >= date_from)
+    if date_to:
+        query = query.where(func.coalesce(ScreenshotCapture.captured_at, ScreenshotCapture.received_at) < date_to)
     trashed = ScreenshotCapture.trashed_at.is_not(None)
     conditions = {
         "all": ~trashed,
@@ -106,7 +122,7 @@ def list_evidence(db: Session, search: str = "", status_filter: str = "all") -> 
                 OcrResult.capture_id == ScreenshotCapture.id, OcrRowObservation.ocr_result_id == OcrResult.id,
                 OcrRowObservation.phone_candidate_normalized.like(f"%{digits}%")))
         query = query.where(or_(*text_match))
-    return list(db.scalars(query.order_by(_ordered()).limit(LIST_LIMIT)))
+    return list(db.scalars(query.order_by(_ordered()).offset(max(0, offset)).limit(min(max(1, limit), LIST_LIMIT))))
 
 
 def evidence_stats(db: Session, settings: Settings) -> dict[str, Any]:
@@ -167,14 +183,61 @@ def serialize_summary(capture: ScreenshotCapture) -> dict[str, Any]:
     }
 
 
+def cross_zone_duplicate_info(db: Session, capture: ScreenshotCapture, settings: Settings, *, detailed: bool) -> dict[str, Any]:
+    """Derive matches from current, non-trash latest observations; fingerprints never leave this module."""
+    if not key_configured(settings) or not capture.zone_id:
+        return {"possible": False, "zone_count": 0, "zones": [], "observations": []}
+    result = latest_result(capture)
+    fingerprints = {row.phone_fingerprint for row in (result.rows if result else []) if row.phone_fingerprint}
+    if not fingerprints:
+        return {"possible": False, "zone_count": 0, "zones": [], "observations": []}
+    rows = list(db.execute(select(OcrRowObservation, OcrResult, ScreenshotCapture, Zone).join(OcrResult, OcrRowObservation.ocr_result_id == OcrResult.id).join(ScreenshotCapture, OcrResult.capture_id == ScreenshotCapture.id).join(Zone, ScreenshotCapture.zone_id == Zone.id).where(OcrRowObservation.phone_fingerprint.in_(fingerprints), ScreenshotCapture.trashed_at.is_(None), ScreenshotCapture.zone_id.is_not(None))).all())
+    latest_attempt: dict[str, int] = {}
+    for _, matched_result, matched_capture, _ in rows:
+        if matched_result.status == "completed":
+            latest_attempt[matched_capture.id] = max(latest_attempt.get(matched_capture.id, 0), matched_result.attempt)
+    zones: dict[str, str] = {}
+    observations: list[dict[str, Any]] = []
+    for row, matched_result, matched_capture, matched_zone in rows:
+        if matched_capture.zone_id == capture.zone_id or matched_result.attempt != latest_attempt.get(matched_capture.id):
+            continue
+        zones[matched_capture.zone_id] = matched_zone.name
+        if detailed:
+            observations.append({"capture_id": matched_capture.id, "zone_name": matched_zone.name, "captured_at": iso(matched_capture.captured_at or matched_capture.received_at), "position": row.position, "status": row.phone_status, "quarantined": row.quarantined})
+    possible = bool(zones)
+    current_zone = db.scalar(select(Zone.name).where(Zone.id == capture.zone_id))
+    return {"possible": possible, "zone_count": len(zones) + (1 if possible else 0), "zones": ([current_zone] if current_zone else []) + list(zones.values()), "observations": observations}
+
+
+def serialize_safe_detail(db: Session, capture: ScreenshotCapture, settings: Settings | None = None) -> dict[str, Any]:
+    """Operational-user response: extracted chat content only, with diagnostics removed."""
+    result = latest_result(capture)
+    rows = []
+    for row in (result.rows if result else []):
+        rows.append({
+            "position": row.position,
+            "display_header_text": row.display_header_text,
+            "phone": {"raw": None, "normalized": None, "status": row.phone_status},
+            "message_preview": row.message_preview,
+            "preview_truncated": row.preview_truncated,
+            "visible_timestamp_text": row.visible_timestamp_text,
+            "timestamp_kind": row.timestamp_kind,
+            "identity_status": "unverified",
+            "review_status": "needs_review",
+        })
+    duplicate = cross_zone_duplicate_info(db, capture, settings, detailed=False) if settings else {"possible": False}
+    return {**serialize_summary(capture), "text": current_text(capture), "identity_status": "unverified", "rows": rows, "result_status": result.status if result else None, "possible_duplicate": duplicate["possible"]}
+
+
 def _audit_trail(db: Session, capture_id: str) -> list[EvidenceAuditEvent]:
     return list(db.scalars(select(EvidenceAuditEvent).where(EvidenceAuditEvent.capture_id == capture_id).order_by(EvidenceAuditEvent.created_at)))
 
 
-def serialize_detail(db: Session, capture: ScreenshotCapture) -> dict[str, Any]:
+def serialize_detail(db: Session, capture: ScreenshotCapture, settings: Settings | None = None) -> dict[str, Any]:
     result = latest_result(capture)
     trail = _audit_trail(db, capture.id)
     conflicts = association_conflicts(db, capture)
+    duplicate = cross_zone_duplicate_info(db, capture, settings, detailed=True) if settings else {"possible": False, "zone_count": 0, "zones": [], "observations": []}
     return {
         **serialize_summary(capture),
         "sha256": capture.sha256, "mime_type": capture.mime_type, "byte_size": capture.byte_size,
@@ -197,6 +260,7 @@ def serialize_detail(db: Session, capture: ScreenshotCapture) -> dict[str, Any]:
         "conflicts": conflicts, "quarantined": bool(conflicts),
         "signals": content_signals(original_text(capture)),
         "proposals": list(capture.region_proposals or []),
+        "cross_zone_duplicate": duplicate,
     }
 
 
