@@ -12,6 +12,7 @@ function Icon({ children, className = "size-4", ...props }: SVGProps<SVGSVGEleme
 type P = { className?: string };
 export const Upload = (p: P) => <Icon {...p}><path d="M12 3v12" /><path d="m17 8-5-5-5 5" /><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /></Icon>;
 export const MonitorUp = (p: P) => <Icon {...p}><path d="m9 10 3-3 3 3" /><path d="M12 13V7" /><rect width="20" height="14" x="2" y="3" rx="2" /><path d="M12 17v4" /><path d="M8 21h8" /></Icon>;
+export const BarChart3 = (p: P) => <Icon {...p}><path d="M4 20V10" /><path d="M10 20V4" /><path d="M16 20v-7" /><path d="M3 20h16" /></Icon>;
 export const Pause = (p: P) => <Icon {...p}><rect x="14" y="3" width="5" height="18" rx="1" /><rect x="5" y="3" width="5" height="18" rx="1" /></Icon>;
 export const Play = (p: P) => <Icon {...p}><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></Icon>;
 export const Square = (p: P) => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2" /></Icon>;

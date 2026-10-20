@@ -53,6 +53,21 @@ MAX_HEADER_CHARS = 512
 MAX_PREVIEW_CHARS = 2000
 
 
+def normalize_timestamp_text(text: str | None) -> str:
+    """Apply only punctuation cleanup to an OCR timestamp candidate.
+
+    This is deliberately not digit repair. It handles the reference project's
+    field-level cleanup case (crop-edge punctuation and Tesseract's common
+    ``an`` reading of ``am``) while leaving message text untouched.
+    """
+    value = (text or "").strip()
+    value = re.sub(r"^[^A-Za-z0-9]+", "", value)
+    value = re.sub(r"[^A-Za-z0-9]+$", "", value)
+    if re.fullmatch(r"[0-9]{1,2}[:.]?[0-9]{2}\s*an", value, re.I):
+        value = re.sub(r"an$", "am", value, flags=re.I)
+    return value
+
+
 class LineLike(Protocol):
     text: str
     confidence: float
@@ -115,7 +130,7 @@ class ParseResult:
 
 
 def timestamp_kind(text: str) -> str | None:
-    t = text.strip().lower()
+    t = normalize_timestamp_text(text).lower()
     if not TIME_FULL_RE.fullmatch(t):
         return None
     if t in ("yesterday", "today"):
@@ -170,7 +185,7 @@ def _segment(words: list, split_timestamp: bool, head_is_phone: bool = False) ->
     )
 
 
-def split_trailing_timestamps(lines: list[LineLike]) -> list[LineLike]:
+def split_trailing_timestamps(lines: list[LineLike], *, field_cleanup: bool = False) -> list[LineLike]:
     """Tesseract may merge a header and its timestamp into one line ("+91 98765 43210 2:52pm").
     Split the trailing one or two words off when they alone form a visible timestamp. Uses the
     line's own word boxes; text is never altered. Lines without word geometry are left as they are."""
@@ -179,7 +194,9 @@ def split_trailing_timestamps(lines: list[LineLike]) -> list[LineLike]:
         words = list(getattr(line, "words", None) or [])
         split = None
         for tail in (2, 1):
-            if len(words) > tail and TIME_FULL_RE.fullmatch(" ".join(w.text for w in words[-tail:]).strip()):
+            raw_candidate = " ".join(w.text for w in words[-tail:])
+            candidate = normalize_timestamp_text(raw_candidate) if field_cleanup else raw_candidate.strip()
+            if len(words) > tail and TIME_FULL_RE.fullmatch(candidate):
                 split = tail
                 break
         if split is None:
@@ -221,7 +238,7 @@ def _preview_text(line: LineLike) -> tuple[str, bool]:
     return " ".join(w.text for w in words[1:]).strip(), True
 
 
-def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResult:
+def parse_chat_list(lines: list[LineLike], width: int, height: int, *, field_cleanup: bool = False) -> ParseResult:
     warnings = ["Unverified OCR evidence; rows are not a complete chat-list coverage claim."]
     if width <= 0 or height <= 0:
         return ParseResult([], warnings + ["Image has no usable area"], {"left": 0, "top": 0, "right": 0, "bottom": 0})
@@ -239,7 +256,8 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResu
         if l.text.strip() and l.left < region_right
         and not (l.top > nav_cutoff and (BADGE_RE.match(l.text) or NAV_WORDS_RE.match(l.text.strip())))
     ]
-    usable = split_trailing_timestamps([l for l in usable if l.top <= nav_cutoff])
+    usable = split_trailing_timestamps([l for l in usable if l.top <= nav_cutoff], field_cleanup=field_cleanup)
+    timestamp_text = normalize_timestamp_text if field_cleanup else lambda value: value.strip()
     if not usable:
         return ParseResult([], warnings + ["No chat-list rows recognized; raw OCR text retained for manual review."], region)
 
@@ -269,13 +287,13 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResu
         timestamps = [
             l for l in near
             if (l.left > w * 0.6 or getattr(l, "split_timestamp", False)) and abs(l.top - y) <= line_height * 0.9
-            and TIME_FULL_RE.fullmatch(l.text.strip())
+            and TIME_FULL_RE.fullmatch(timestamp_text(l.text))
         ]
         timestamp_line = min(timestamps, key=lambda l: abs(l.top - y)) if timestamps else None
         header_parts = sorted(
             (l for l in near
              if l is not timestamp_line and w * 0.04 < l.left < w * 0.76 and abs(l.top - y) <= line_height * 0.9
-             and not TIME_FULL_RE.fullmatch(l.text.strip())),
+            and not TIME_FULL_RE.fullmatch(timestamp_text(l.text))),
             key=lambda l: l.left,
         )
         header_text = " ".join(l.text.strip() for l in header_parts) or None
@@ -342,7 +360,7 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int) -> ParseResu
             phone_raw=phone.raw, phone_normalized=phone.normalized, phone_status=phone.status,
             message_preview=preview,
             preview_truncated=bool(preview and TRUNCATED_RE.search(preview)),
-            visible_timestamp_text=timestamp_line.text.strip() if timestamp_line else None,
+            visible_timestamp_text=timestamp_text(timestamp_line.text) if timestamp_line else None,
             timestamp_kind=timestamp_kind(timestamp_line.text) if timestamp_line else None,
             row_bounds={"left": 0, "top": top, "right": region_right, "bottom": bottom},
             header_bounds=header_box,
