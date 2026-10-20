@@ -133,12 +133,15 @@ describe("TowerAutoSyncPage capture strip and extracted chats", () => {
     render(<TowerAutoSyncPage />);
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(screen.getByRole("status")).toHaveTextContent("OCR still pending for 1 screenshot");
+    // The initial jump to the newest card runs in a passive effect that can flush after the cards render (slow CI).
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: "auto" })));
     scrollTo.mockClear();
     api.state.records = [cap(1), cap(2, "processing")];
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
     await waitFor(() => expect(cards()).toHaveLength(2));
     expect(cards()[1]).toHaveAccessibleName("Screenshot #2");
-    expect(scrollTo).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(1));
+    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: "smooth" }));
     const strip = screen.getByTestId("capture-strip");
     Object.defineProperties(strip, { scrollLeft: { value: 0, configurable: true }, clientWidth: { value: 400, configurable: true }, scrollWidth: { value: 1200, configurable: true } });
     fireEvent.scroll(strip);
@@ -146,9 +149,10 @@ describe("TowerAutoSyncPage capture strip and extracted chats", () => {
     api.state.records = [cap(1), cap(2), cap(3)];
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
     await waitFor(() => expect(cards()).toHaveLength(3));
-    expect(scrollTo).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Includes every screenshot shown above"));
     expect(screen.getByText("Message from cap-3")).toBeInTheDocument();
+    // Checked only after later renders, so the arrival effect has certainly run and did not scroll.
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 
   it("opens the matching Screenshot details from a card, View details and a chat source link", async () => {
