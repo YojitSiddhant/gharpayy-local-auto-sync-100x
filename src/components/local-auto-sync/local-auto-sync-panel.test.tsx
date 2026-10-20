@@ -11,6 +11,7 @@ function fakeBackend(options: { records?: EvidenceSummary[]; extract?: () => Pro
   const calls: Call[] = [];
   let records = options.records ?? [summary];
   let current: EvidenceDetail = { ...baseDetail };
+  const conflict = () => jsonResponse({ error: { code: "EDIT_CONFLICT", message: "This reading was changed in another tab or by another reviewer. Your change was not saved." } }, 409);
   const fetchMock = vi.fn(async (input: string, init: RequestInit = {}) => {
     const url = String(input);
     const method = (init.method ?? "GET").toUpperCase();
@@ -28,17 +29,25 @@ function fakeBackend(options: { records?: EvidenceSummary[]; extract?: () => Pro
     if (path === "/purge-trash") { records = records.filter((r) => !r.trashed); return jsonResponse({ purged: 1 }); }
     if (path === `/${ID}/image`) return jsonResponse({});
     if (path === `/${ID}` && method === "PATCH") {
-      const patch = body as { text?: string; reviewer?: string };
+      const patch = body as { text?: string; reviewer?: string; expected_revision?: number };
+      if (patch.expected_revision !== current.revision) return conflict();
+      current = { ...current, revision: current.revision + 1 };
       if (patch.text !== undefined) current = { ...current, text: patch.text, corrections: [...current.corrections, { time: "t", old_text: current.text, new_text: patch.text, reviewer: patch.reviewer || "Unidentified local reviewer" }] };
       return jsonResponse(current);
     }
     if (path === `/${ID}`) return jsonResponse(current);
-    if (path === `/${ID}/review`) { current = { ...current, status: "reviewed" }; return jsonResponse(current); }
+    if (path === `/${ID}/review`) {
+      if ((body as { expected_revision?: number }).expected_revision !== current.revision) return conflict();
+      current = { ...current, status: "reviewed", revision: current.revision + 1 };
+      return jsonResponse(current);
+    }
     if (path === `/${ID}/trash`) { current = { ...current, trashed: true, trash: { time: "t", reason: (body as { reason: string }).reason, reviewer: "R" }, trash_history: [{ action: "trash", time: "t", reason: "r", reviewer: "R" }] }; return jsonResponse(current); }
     return jsonResponse({ error: { code: "NOT_FOUND", message: "nope" } }, 404);
   });
   vi.stubGlobal("fetch", fetchMock);
-  return { calls, fetchMock };
+  /** Simulate another tab saving a different correction. */
+  const editElsewhere = (text: string) => { current = { ...current, text, revision: current.revision + 1 }; };
+  return { calls, fetchMock, editElsewhere };
 }
 
 beforeEach(() => {
@@ -395,5 +404,96 @@ describe("LocalAutoSyncPanel — queue failure handling", () => {
     fireEvent.change(await screen.findByLabelText("Review OCR text"), { target: { value: "typed just before closing" } });
     window.dispatchEvent(new Event("pagehide"));
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PATCH" && (init as RequestInit).keepalive === true)).toBe(true));
+  });
+});
+
+describe("LocalAutoSyncPanel — concurrent editing protection", () => {
+  const patches = (calls: Call[]) => calls.filter((c) => c.method === "PATCH");
+
+  async function conflictAfterTyping() {
+    const backend = fakeBackend();
+    render(<LocalAutoSyncPanel />);
+    const text = await screen.findByLabelText("Review OCR text");
+    backend.editElsewhere("saved by tab B"); // another tab saves after this tab loaded revision 3
+    fireEvent.change(text, { target: { value: "my tab A text" } });
+    await screen.findByText("Edit conflict", undefined, { timeout: 2000 });
+    return { ...backend, text };
+  }
+
+  it("detects a stale save, keeps the unsaved text and never retries silently", async () => {
+    const { calls, text } = await conflictAfterTyping();
+    expect(patches(calls)).toHaveLength(1);
+    expect(patches(calls)[0].body).toMatchObject({ expected_revision: 3, text: "my tab A text" });
+    expect(text).toHaveValue("my tab A text");
+    expect(screen.getByText("saved by tab B", { selector: "pre" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Save \/ retry/ }));
+    fireEvent.change(text, { target: { value: "my tab A text, edited more" } });
+    window.dispatchEvent(new Event("pagehide"));
+    await new Promise((r) => setTimeout(r, 1000)); // longer than the autosave debounce
+    expect(patches(calls)).toHaveLength(1); // no autosave, Save/retry or unload save over the newer version
+    expect(screen.getAllByRole("alert").map((a) => a.textContent).join(" ")).toMatch(/Your unsaved changes are kept here and were not saved/);
+    expect(text).toHaveValue("my tab A text, edited more");
+  });
+
+  it("Load latest discards only this tab's draft and shows the saved version", async () => {
+    const { calls, text } = await conflictAfterTyping();
+    fireEvent.click(screen.getByRole("button", { name: "Load latest (discard my changes)" }));
+    await waitFor(() => expect(text).toHaveValue("saved by tab B"));
+    expect(screen.queryByText("Edit conflict")).not.toBeInTheDocument();
+    expect(patches(calls)).toHaveLength(1);
+  });
+
+  it("Save my version over latest re-bases explicitly on the newest revision", async () => {
+    const { calls, text } = await conflictAfterTyping();
+    fireEvent.click(screen.getByRole("button", { name: "Save my version over latest" }));
+    await waitFor(() => expect(patches(calls)).toHaveLength(2));
+    expect(patches(calls)[1].body).toMatchObject({ expected_revision: 4, text: "my tab A text" });
+    await waitFor(() => expect(screen.queryByText("Edit conflict")).not.toBeInTheDocument());
+    expect(text).toHaveValue("my tab A text");
+    expect(screen.getByText("Original OCR & correction history (1)")).toBeInTheDocument();
+  });
+
+  it("consecutive saves from the same tab never conflict with each other", async () => {
+    const { calls } = fakeBackend();
+    render(<LocalAutoSyncPanel />);
+    const text = await screen.findByLabelText("Review OCR text");
+    fireEvent.change(text, { target: { value: "first edit" } });
+    await waitFor(() => expect(patches(calls)).toHaveLength(1), { timeout: 2000 });
+    fireEvent.change(text, { target: { value: "second edit" } });
+    await waitFor(() => expect(patches(calls)).toHaveLength(2), { timeout: 2000 });
+    expect(patches(calls).map((c) => (c.body as { expected_revision: number }).expected_revision)).toEqual([3, 4]);
+    await waitFor(() => expect(screen.getByText("Original OCR & correction history (2)")).toBeInTheDocument());
+    expect(screen.queryByText("Edit conflict")).not.toBeInTheDocument();
+  });
+
+  it("refuses to mark a stale view reviewed and loads the latest text", async () => {
+    const { calls, editElsewhere } = fakeBackend();
+    render(<LocalAutoSyncPanel />);
+    const text = await screen.findByLabelText("Review OCR text");
+    editElsewhere("corrected in another tab");
+    fireEvent.click(screen.getByRole("button", { name: /Mark reviewed/ }));
+    expect(await screen.findByText(/Not marked reviewed: the text changed since you opened it/)).toBeInTheDocument();
+    expect(calls.find((c) => c.url.endsWith("/review"))?.body).toMatchObject({ expected_revision: 3 });
+    await waitFor(() => expect(text).toHaveValue("corrected in another tab"));
+  });
+});
+
+describe("LocalAutoSyncPanel — queue memory budget", () => {
+  it("rejects screenshots beyond the queue byte budget with an explicit message", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const { calls } = fakeBackend({ records: [], extract: async () => { await gate; return jsonResponse(sampleResponse, 201); } });
+    render(<LocalAutoSyncPanel />);
+    await screen.findByText("No local screenshots yet");
+    const big = (i: number) => {
+      const file = pngFile(`big-${i}.png`);
+      Object.defineProperty(file, "size", { value: 9.9 * 1024 * 1024 });
+      return file;
+    };
+    choose(Array.from({ length: 22 }, (_, i) => big(i))); // first is in flight, then 20 fit in 200 MB
+    expect(await screen.findByText(/Queue memory limit \(200 MB\) reached; big-21.png was NOT accepted/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("20 queued");
+    await act(async () => release());
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(21), { timeout: 5000 });
   });
 });

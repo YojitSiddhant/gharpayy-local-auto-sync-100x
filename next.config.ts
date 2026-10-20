@@ -6,6 +6,10 @@ const nextConfig: NextConfig = {
     agentFeedback: true,
   },
   cacheComponents: true,
+  // Evidence search queries can contain phone numbers or message text; never write them to the dev terminal.
+  logging: {
+    incomingRequests: { ignore: [/^\/api\/local\//, /^\/api\/ocr\//] },
+  },
   partialPrefetching: true,
   turbopack: {
     rules: {

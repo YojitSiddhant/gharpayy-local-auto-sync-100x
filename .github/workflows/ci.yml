@@ -22,4 +22,6 @@ jobs:
         with: { python-version: '3.11' }
       - run: python -m pip install --upgrade pip
       - run: pip install -r backend/requirements-dev.txt
-      - run: pytest backend/tests
+      # No MySQL service in CI: MySQL-backed tests are SKIPPED and each skip is listed with its reason (-rs).
+      # Locally, REQUIRE_MYSQL_TESTS=1 turns those skips into failures so database coverage is never assumed.
+      - run: pytest backend/tests -rs

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { describeCaptureError, ExactFrameGate, queueErrorAction, startTicker, waitForVideoSize } from "@/src/lib/capture";
+import { describeCaptureError, ExactFrameGate, queueErrorAction, sameBytes, startTicker, waitForVideoSize } from "@/src/lib/capture";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -88,5 +88,18 @@ describe("waitForVideoSize", () => {
     const never = waitForVideoSize(video, 1000);
     vi.advanceTimersByTime(1000);
     await expect(never).resolves.toBe(false);
+  });
+});
+
+describe("sameBytes", () => {
+  it("is exact for aligned, unaligned and odd-length buffers", () => {
+    const a = new Uint8ClampedArray([1, 2, 3, 4, 5, 6, 7]);
+    expect(sameBytes(a, new Uint8ClampedArray([1, 2, 3, 4, 5, 6, 7]))).toBe(true);
+    expect(sameBytes(a, new Uint8ClampedArray([1, 2, 3, 4, 5, 6, 8]))).toBe(false); // tail byte
+    expect(sameBytes(a, new Uint8ClampedArray([1, 2, 9, 4, 5, 6, 7]))).toBe(false); // word byte
+    expect(sameBytes(a, new Uint8ClampedArray(6))).toBe(false);
+    const buffer = new Uint8ClampedArray(12).fill(3);
+    expect(sameBytes(buffer.subarray(1, 9), new Uint8ClampedArray(8).fill(3))).toBe(true); // unaligned view
+    expect(sameBytes(buffer.subarray(1, 9), new Uint8ClampedArray(8).fill(4))).toBe(false);
   });
 });

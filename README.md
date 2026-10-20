@@ -38,6 +38,16 @@ backend/.venv/bin/pytest backend/tests
 
 `npm run audit` reports dependency vulnerabilities without applying fixes.
 
+Maintenance (all dry-run by default, counts only, never delete database rows):
+
+```bash
+backend/.venv/bin/python -m backend.app.ocr.retention              # retention preview (--apply moves old evidence to Trash)
+backend/.venv/bin/python -m backend.app.ocr.storage_check          # files vs database (--remove-orphans deletes only unreferenced files)
+backend/.venv/bin/python -m backend.benchmarks.ocr_benchmark       # bounded synthetic OCR benchmark (--db: rolled-back MySQL timings)
+```
+
+Details: [docs/PHASE_2_OCR.md](docs/PHASE_2_OCR.md), [docs/PHASE_3_RELIABILITY.md](docs/PHASE_3_RELIABILITY.md), [docs/PHASE_4_HARDENING.md](docs/PHASE_4_HARDENING.md).
+
 ## Current limitations
 
 Phase 2 implements manual screenshot upload, local English Tesseract OCR, conservative chat-list parsing and MySQL evidence storage. It does not implement Hindi OCR, screen capture, ML training, review/correction workflows, CRM delivery or lead creation. OCR accuracy has not been measured. See `docs/PHASE_2_OCR.md` for the security boundary, retention and limitations.

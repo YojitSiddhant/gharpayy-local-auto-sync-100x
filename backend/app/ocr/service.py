@@ -128,6 +128,9 @@ def process_screenshot(
             capture.evidence_storage_key = store_evidence(settings.screenshot_storage_dir, image.sha256, image.extension, image.data)
         except OSError:
             capture.evidence_storage_key = None  # evidence retention failure does not block review-only OCR
+        # Link the stored file before OCR runs, so an interruption cannot leave an unreferenced (orphaned) file
+        # and a later Retry OCR can still find the screenshot.
+        db.commit()
     run_ocr_attempt(db, capture, image, settings, engine_factory)
     return capture, False
 
@@ -159,6 +162,8 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     result.line_count = len(output.lines)
     result.lines = [line.to_dict() for line in output.lines]
     result.warnings = parsed.warnings + ([] if output.lines else ["Tesseract found no text"])
+    if settings.screenshot_retention_enabled and capture.evidence_storage_key is None:
+        result.warnings.append("Screenshot could not be retained on disk; Retry OCR and the image preview are unavailable.")
     if capture.cross_account_reuse:
         result.warnings.append("Identical screenshot exists under another account label; held separately, identity unverified.")
     result.parser_version = PARSER_VERSION
