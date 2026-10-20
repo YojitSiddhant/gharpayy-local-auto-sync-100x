@@ -1,7 +1,5 @@
-import { LocalAutoSyncPage, localAutoSyncMetadata } from "@/src/components/local-auto-sync/local-auto-sync-page";
-
-export const metadata = localAutoSyncMetadata;
+import { redirect } from "next/navigation";
 
 export default function LocalAutoSyncRoute() {
-  return <LocalAutoSyncPage />;
+  redirect("/tower/auto-sync");
 }
