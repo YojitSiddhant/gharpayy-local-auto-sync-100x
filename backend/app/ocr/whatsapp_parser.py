@@ -18,7 +18,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Protocol
 
-PARSER_VERSION = "phase3-chatlist-0.2"
+PARSER_VERSION = "phase6-chatlist-0.3"
 
 PHONE_STATUS_CANDIDATE = "candidate"
 PHONE_STATUS_AMBIGUOUS = "ambiguous"
@@ -35,6 +35,10 @@ TIME_FULL_RE = re.compile(
 STRICT_IN_HEADER_RE = re.compile(r"^\+91[\s-]*([6-9](?:[\s-]*\d){9})$")
 # A bare ten-digit Indian mobile (country code not visible).
 BARE_IN_HEADER_RE = re.compile(r"^([6-9](?:[\s-]*\d){9})$")
+# International E.164-style visible headers: preserve the observed country code and
+# normalize only whitespace/separators. This remains a candidate only when the whole
+# header is phone-like; names and message numbers never become identities.
+INTERNATIONAL_HEADER_RE = re.compile(r"^\+(\d[\d\s().-]{6,18}\d)$")
 # Anything that *looks* like a phone header, including OCR-confusable letters. Used only to flag ambiguity.
 PHONE_LIKE_RE = re.compile(r"^\+?[\dOoIl|()\s.-]{8,}$")
 PHONE_IN_TEXT_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{8,}\d)(?!\d)")
@@ -134,6 +138,14 @@ def classify_phone_header(header_text: str | None) -> PhoneEvidence:
         return PhoneEvidence(text, "+91" + re.sub(r"\D", "", strict.group(1)), PHONE_STATUS_CANDIDATE)
     if BARE_IN_HEADER_RE.fullmatch(text):
         return PhoneEvidence(text, None, PHONE_STATUS_AMBIGUOUS, ["Country code not visible; number not normalized"])
+    if text.startswith("+91"):
+        return PhoneEvidence(text, None, PHONE_STATUS_AMBIGUOUS, ["Indian phone header is incomplete or malformed; digits not repaired"])
+    international = INTERNATIONAL_HEADER_RE.fullmatch(text)
+    if international:
+        digits = "+" + re.sub(r"\D", "", international.group(1))
+        if 8 <= len(digits) - 1 <= 15:
+            return PhoneEvidence(text, digits, PHONE_STATUS_CANDIDATE)
+        return PhoneEvidence(text, None, PHONE_STATUS_AMBIGUOUS, ["International phone header length is outside the supported visible range"])
     if PHONE_LIKE_RE.fullmatch(text):
         if re.search(r"[OoIl|]", text):
             reason = "Phone-like header contains OCR-confusable characters; digits not repaired"
