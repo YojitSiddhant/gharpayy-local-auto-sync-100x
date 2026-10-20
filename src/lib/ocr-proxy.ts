@@ -65,6 +65,7 @@ export function checkProxyRequest(headers: Headers): ProxyRejection | null {
 
 /** Map an allowlisted /api/local/evidence/... request onto the FastAPI path. Anything else is refused. */
 export function resolveEvidencePath(method: string, segments: string[], search: URLSearchParams): string | null {
+  if (segments[0] === "analytics" && method === "GET" && (segments.length === 1 || (segments.length === 2 && segments[1] === "cleanup-preview"))) return segments.join("/");
   if (segments[0] !== "evidence" || segments.length > 3) return null;
   const [, first, second] = segments;
   let path: string | null = null;
