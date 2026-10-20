@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     evidence_max_records: int = 200
     evidence_max_bytes: int = 100 * 1024 * 1024
     evidence_json_body_limit: int = 1024 * 1024
+    # Retention (reversible): evidence older than N days may be moved to Trash by the explicit
+    # `python -m backend.app.ocr.retention --apply` command. 0 disables it. Nothing is ever purged automatically.
+    evidence_retention_days: int = 0
 
     model_config = SettingsConfigDict(env_file=(".env", "backend/.env"), extra="ignore")
 

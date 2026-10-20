@@ -90,6 +90,7 @@ class CaptureOut(BaseModel):
     review_status: Literal["unverified_review_only"]
     cross_account_reuse: bool
     evidence_stored: bool
+    trashed: bool = False
     received_at: str | None
 
 
@@ -137,7 +138,7 @@ def build_extract_response(capture: ScreenshotCapture, duplicate: bool) -> Extra
             original_filename=capture.original_filename, mime_type=capture.mime_type, byte_size=capture.byte_size,
             width=capture.width, height=capture.height, source_mode=capture.source_mode, status=capture.status,
             review_status=capture.review_status, cross_account_reuse=capture.cross_account_reuse,
-            evidence_stored=capture.evidence_storage_key is not None, received_at=iso(capture.received_at),
+            evidence_stored=capture.evidence_storage_key is not None, trashed=capture.trashed_at is not None, received_at=iso(capture.received_at),
         ),
         result=result_out(latest) if latest else None,
         rows=[row_out(row) for row in latest.rows] if latest else [],

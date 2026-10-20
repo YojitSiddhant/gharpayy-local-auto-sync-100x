@@ -44,6 +44,7 @@ export const extractResponseSchema = z.object({
     review_status: z.literal("unverified_review_only"),
     cross_account_reuse: z.boolean(),
     evidence_stored: z.boolean(),
+    trashed: z.boolean().optional(),
     received_at: z.string().nullable(),
   }),
   result: z.object({

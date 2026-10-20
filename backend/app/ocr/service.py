@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ _OCR_ERROR_MESSAGE = {
     "OCR_TIMEOUT": "OCR exceeded the processing time limit.",
     "OCR_ENGINE_UNAVAILABLE": "Local English Tesseract OCR is not available.",
     "OCR_FAILED": "OCR could not process this screenshot.",
+    "OCR_INTERRUPTED": "OCR was interrupted before completing (for example by a server restart). Use Retry OCR.",
 }
 
 
@@ -47,6 +48,19 @@ def default_engine(settings: Settings) -> TesseractEngine:
 
 def _stale_after(settings: Settings) -> timedelta:
     return timedelta(seconds=max(60.0, settings.ocr_tesseract_timeout_seconds * 3))
+
+
+def recover_stale_processing(db: Session, settings: Settings) -> int:
+    """Mark captures stuck in 'processing' past the stale window as failed so they can be retried.
+    Never deletes anything; the retained screenshot and earlier attempts are untouched."""
+    cutoff = utcnow() - _stale_after(settings)
+    result = db.execute(
+        update(ScreenshotCapture)
+        .where(ScreenshotCapture.status == "processing", ScreenshotCapture.updated_at < cutoff)
+        .values(status="failed", error_code="OCR_INTERRUPTED", error_message=_OCR_ERROR_MESSAGE["OCR_INTERRUPTED"], updated_at=utcnow())
+    )
+    db.commit()
+    return int(result.rowcount or 0)
 
 
 def storage_usage(db: Session) -> tuple[int, int]:
@@ -74,8 +88,11 @@ def process_screenshot(
         ScreenshotCapture.account_label == account_label, ScreenshotCapture.sha256 == image.sha256))
     if capture is not None:
         if capture.status == "completed":
-            capture.duplicate_hits += 1
+            # Atomic increment: safe even if OCR concurrency is raised above one.
+            db.execute(update(ScreenshotCapture).where(ScreenshotCapture.id == capture.id)
+                       .values(duplicate_hits=ScreenshotCapture.duplicate_hits + 1))
             db.commit()
+            db.refresh(capture)
             return capture, True
         if capture.status == "processing" and utcnow() - capture.updated_at < _stale_after(settings):
             raise ApiError(409, "CAPTURE_IN_PROGRESS", "This screenshot is already being processed.", {"capture_id": capture.id})
@@ -121,8 +138,9 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     result = OcrResult(capture_id=capture.id, attempt=attempt, tesseract_psm=settings.ocr_tesseract_psm, started_at=utcnow())
     try:
         output = engine_factory(settings).run(decode_rgb(image.data))
-    except OcrError as exc:
-        code = exc.code
+        parsed = parse_chat_list(output.lines, image.width, image.height)
+    except Exception as exc:  # noqa: BLE001 - any failure must be recorded, never leave the capture "processing"
+        code = exc.code if isinstance(exc, OcrError) else "OCR_FAILED"
         result.status, result.error_code, result.error_message = "failed", code, _OCR_ERROR_MESSAGE.get(code)
         result.completed_at = utcnow()
         capture.status, capture.error_code, capture.error_message = "failed", code, _OCR_ERROR_MESSAGE.get(code)
@@ -130,7 +148,6 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
         db.commit()
         raise ApiError(_OCR_ERROR_STATUS.get(type(exc), 500), code, _OCR_ERROR_MESSAGE.get(code, "OCR failed."), {"capture_id": capture.id}) from None
 
-    parsed = parse_chat_list(output.lines, image.width, image.height)
     result.status = "completed"
     result.engine_version = output.engine_version
     result.ocr_language = output.language

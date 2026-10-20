@@ -52,6 +52,16 @@ afterEach(() => {
 
 const choose = (files: File[]) => fireEvent.change(screen.getByTestId("screenshot-input"), { target: { files } });
 
+/**
+ * The empty state is rendered before the initial evidence load finishes, while Screenshots / Share source are
+ * still disabled (`!ready`). Wait for loading to complete before interacting, otherwise clicks can land on a
+ * disabled button on slower machines (the cause of the GitHub Actions failure).
+ */
+async function waitUntilReady() {
+  await screen.findByText("No local screenshots yet");
+  await waitFor(() => expect(screen.getByRole("button", { name: /Share source/ })).toBeEnabled());
+}
+
 describe("LocalAutoSyncPanel — reference layout", () => {
   it("renders the reference header, controls, stats, filters and footer", async () => {
     fakeBackend({ records: [] });
@@ -92,7 +102,7 @@ describe("LocalAutoSyncPanel — uploads and queue", () => {
   it("rejects invalid files without calling the backend", async () => {
     const { calls } = fakeBackend({ records: [] });
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     choose([new File(["hello"], "notes.txt", { type: "text/plain" })]);
     expect(await screen.findByRole("alert")).toHaveTextContent("notes.txt: only PNG, JPEG or WebP");
     expect(calls.some((c) => c.url.startsWith("/api/ocr"))).toBe(false);
@@ -101,7 +111,7 @@ describe("LocalAutoSyncPanel — uploads and queue", () => {
   it("uploads through the shared OCR path with manual-file metadata and shows the result", async () => {
     const { calls } = fakeBackend({ records: [] });
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     choose([pngFile()]);
     expect(await screen.findByLabelText("Captured screenshot")).toBeInTheDocument();
     const upload = calls.find((c) => c.url === "/api/ocr/extract")!;
@@ -122,7 +132,7 @@ describe("LocalAutoSyncPanel — uploads and queue", () => {
     const gate = new Promise<void>((r) => { release = r; });
     const { calls } = fakeBackend({ records: [], extract: async () => { await gate; return jsonResponse(sampleResponse, 201); } });
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     choose([pngFile("one.png"), pngFile("two.png")]);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reading locally…"));
     fireEvent.click(screen.getByRole("button", { name: "Pause queue" }));
@@ -136,7 +146,7 @@ describe("LocalAutoSyncPanel — uploads and queue", () => {
   it("pauses the queue on storage full and shows OCR errors", async () => {
     fakeBackend({ records: [], extract: async () => jsonResponse({ error: { code: "STORAGE_FULL", message: "Storage full. Trash does not free storage until explicitly purged. Remaining queue is paused." } }, 507) });
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     choose([pngFile()]);
     expect(await screen.findByRole("alert")).toHaveTextContent("Storage full");
     expect(screen.getByRole("button", { name: "Resume queue" })).toBeEnabled();
@@ -195,7 +205,7 @@ describe("LocalAutoSyncPanel — review workflow", () => {
 
 describe("LocalAutoSyncPanel — Share source capture", () => {
   function fakeScreen(width = 1440, height = 900) {
-    const track = { stop: vi.fn(), label: "screen:0", addEventListener: vi.fn() };
+    const track = { stop: vi.fn(), label: "screen:0", addEventListener: vi.fn(), muted: false, readyState: "live" };
     const stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
     const getDisplayMedia = vi.fn(async () => stream);
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getDisplayMedia } });
@@ -204,16 +214,25 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", { configurable: true, get: () => size.height });
     Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get: () => 4 });
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    // Each drawn frame differs by one pixel unless `frames.same` is set (exact-pixel gate input).
+    const frames = { n: 0, same: false };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+      getImageData: (_x: number, _y: number, w: number, h: number) => {
+        const data = new Uint8ClampedArray(w * h * 4);
+        data[0] = frames.same ? 7 : ++frames.n % 255;
+        return { data, width: w, height: h };
+      },
+    } as unknown as CanvasRenderingContext2D);
     vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(function (cb: BlobCallback) { cb(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" })); });
-    return { track, getDisplayMedia, size };
+    return { track, getDisplayMedia, size, frames };
   }
 
   it("requires a user click, shows preview and crop, samples frames and stops sharing", async () => {
     const { calls } = fakeBackend({ records: [] });
     const { track, getDisplayMedia } = fakeScreen();
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     expect(getDisplayMedia).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
     expect(await screen.findByText("screen:0 · 1440 × 900 · Crop pixels")).toBeInTheDocument();
@@ -233,7 +252,7 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     fakeBackend({ records: [] });
     const { size } = fakeScreen();
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
     await screen.findByText(/Crop pixels/);
@@ -248,8 +267,133 @@ describe("LocalAutoSyncPanel — Share source capture", () => {
     fakeBackend({ records: [] });
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
     render(<LocalAutoSyncPanel />);
-    await screen.findByText("No local screenshots yet");
+    await waitUntilReady();
     fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Screen sharing needs desktop Chrome");
+  });
+
+  async function confirmedCapture(calls: Call[]) {
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
+    await screen.findByText(/Crop pixels/);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm crop & retain frames" }));
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sampling every 5s · 0 queued"));
+  }
+
+  it("skips byte-identical frames before upload (exact-pixel gate)", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    const { frames } = fakeScreen();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await confirmedCapture(calls);
+    frames.same = true;
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("same-account duplicates skipped"));
+    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2); // first + first "same" frame; then skipped
+    expect(screen.getByRole("status")).toHaveTextContent("1 same-account duplicates skipped");
+  });
+
+  it("requires re-approval after a long capture gap", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    fakeScreen();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await confirmedCapture(calls);
+    vi.setSystemTime(Date.now() + 60_000); // computer slept / tab throttled
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    expect(await screen.findByText(/Capture gap of \d+s detected/)).toHaveAttribute("role", "alert");
+    expect(screen.getByRole("button", { name: "Confirm crop & retain frames" })).toBeEnabled();
+  });
+
+  it("does not sample a muted (minimized/hidden) source", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    const { track } = fakeScreen();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await confirmedCapture(calls);
+    track.muted = true;
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    expect(await screen.findByText(/not delivering frames/)).toBeInTheDocument();
+    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1);
+  });
+
+  it("adopts a changed source size and resumes only after confirmation", async () => {
+    const { calls } = fakeBackend({ records: [] });
+    const { size } = fakeScreen();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await confirmedCapture(calls);
+    size.width = 1280;
+    await act(async () => { vi.advanceTimersByTime(5000); });
+    expect(await screen.findByText("screen:0 · 1280 × 900 · Crop pixels")).toBeInTheDocument();
+    expect(screen.getByLabelText("Crop x1")).toHaveValue(1280);
+    expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm crop & retain frames" }));
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2));
+    expect(calls[calls.findLastIndex((c) => c.url === "/api/ocr/extract")].headers["x-crop"]).toBe("0,0,1280,900");
+  });
+
+  it("explains a cancelled or denied permission and leaves capture stopped", async () => {
+    fakeBackend({ records: [] });
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getDisplayMedia: vi.fn(async () => { throw new DOMException("Permission denied", "NotAllowedError"); }) } });
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    fireEvent.click(screen.getByRole("button", { name: /Share source/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Screen sharing was cancelled or not permitted. Nothing was captured.");
+    expect(screen.getByRole("button", { name: /Share source/ })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Ready");
+  });
+});
+
+describe("LocalAutoSyncPanel — queue failure handling", () => {
+  function sequence(responses: Response[]) {
+    let i = 0;
+    return async () => responses[Math.min(i++, responses.length - 1)];
+  }
+  const err = (code: string, status: number) => jsonResponse({ error: { code, message: `${code} message.` } }, status);
+
+  it("keeps the screenshot and pauses when the OCR engine is unavailable", async () => {
+    const { calls } = fakeBackend({ records: [], extract: sequence([err("OCR_ENGINE_UNAVAILABLE", 503), jsonResponse(sampleResponse, 201)]) });
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    choose([pngFile("keep-me.png")]);
+    expect(await screen.findByText(/Remaining queue is paused/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Queue paused · 1 queued");
+    fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2));
+    expect(calls.filter((c) => c.url === "/api/ocr/extract").every((c) => c.headers["x-filename"] === "keep-me.png")).toBe(true);
+  });
+
+  it("drops only file-specific rejections and continues with the next screenshot", async () => {
+    const { calls } = fakeBackend({ records: [], extract: sequence([err("CORRUPTED_IMAGE", 422), jsonResponse(sampleResponse, 201)]) });
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    choose([pngFile("bad.png"), pngFile("good.png")]);
+    await waitFor(() => expect(calls.filter((c) => c.url === "/api/ocr/extract")).toHaveLength(2));
+    expect(screen.getByText(/bad.png: CORRUPTED_IMAGE message. This file was not accepted./)).toBeInTheDocument();
+    expect(screen.getByRole("status")).not.toHaveTextContent("Queue paused");
+  });
+
+  it("points recorded OCR failures to Retry OCR", async () => {
+    fakeBackend({ records: [], extract: async () => err("OCR_TIMEOUT", 504) });
+    render(<LocalAutoSyncPanel />);
+    await waitUntilReady();
+    choose([pngFile("slow.png")]);
+    expect(await screen.findByText(/slow.png: OCR_TIMEOUT message. The failed reading was saved; use Retry OCR on it./)).toBeInTheDocument();
+  });
+
+  it("explains a duplicate whose saved copy is in Trash", async () => {
+    fakeBackend({ extract: async () => jsonResponse({ ...sampleResponse, duplicate: true, capture: { ...sampleResponse.capture, trashed: true } }) });
+    render(<LocalAutoSyncPanel />);
+    await screen.findByLabelText("Captured screenshot");
+    choose([pngFile("again.png")]);
+    expect(await screen.findByText(/again.png: identical screenshot is already saved but is in Trash/)).toBeInTheDocument();
+  });
+
+  it("saves pending corrections with keepalive when the page is hidden", async () => {
+    const { fetchMock } = fakeBackend();
+    render(<LocalAutoSyncPanel />);
+    fireEvent.change(await screen.findByLabelText("Review OCR text"), { target: { value: "typed just before closing" } });
+    window.dispatchEvent(new Event("pagehide"));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit)?.method === "PATCH" && (init as RequestInit).keepalive === true)).toBe(true));
   });
 });

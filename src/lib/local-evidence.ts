@@ -124,8 +124,9 @@ export async function getEvidenceImageUrl(id: string) {
   const blob = await (await localFetch(`/${id}/image`)).blob();
   return URL.createObjectURL(blob);
 }
-export async function updateEvidence(id: string, body: { reviewer?: string; screenshot_label?: string; text?: string; observed_names?: { position: number; name: string }[] }) {
-  return parsed(await localFetch(`/${id}`, { method: "PATCH", body: JSON.stringify(body) }), detailSchema);
+export async function updateEvidence(id: string, body: { reviewer?: string; screenshot_label?: string; text?: string; observed_names?: { position: number; name: string }[] }, keepalive = false) {
+  // keepalive lets a save started during page unload (pagehide) complete after the tab closes.
+  return parsed(await localFetch(`/${id}`, { method: "PATCH", body: JSON.stringify(body), keepalive }), detailSchema);
 }
 export async function markReviewed(id: string, reviewer: string) {
   return parsed(await localFetch(`/${id}/review`, post({ reviewer })), detailSchema);

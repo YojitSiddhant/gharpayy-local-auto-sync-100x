@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Check, Download, MonitorUp, Pause, Play, RotateCcw, Save, Search, Square, Trash2, Upload } from "@/src/components/ui/icons";
+import { CAPTURE_GAP_MS, CAPTURE_INTERVAL_MS, describeCaptureError, ExactFrameGate, queueErrorAction, startTicker, waitForVideoSize, type Ticker } from "@/src/lib/capture";
 import { extractScreenshot, MAX_UPLOAD_BYTES, OcrRequestError, validateScreenshotFile } from "@/src/lib/ocr-api";
 import {
   captureMatches, exportEvidence, getEvidence, getEvidenceImageUrl, getStats, listEvidence, markReviewed, proposeRegion,
@@ -28,8 +29,7 @@ const emptyBounds: Bounds = { x0: 0, y0: 0, x1: 0, y1: 0 };
 type Drafts = { id?: string; text: string | null; label: string | null; names: Record<number, string> };
 const noDrafts: Drafts = { text: null, label: null, names: {} };
 export const LOCAL_QUEUE_LIMIT = 100;
-export const CAPTURE_INTERVAL_MS = 5000;
-const PAUSE_ON = new Set(["STORAGE_FULL", "NETWORK_ERROR", "BACKEND_UNAVAILABLE", "BACKEND_TIMEOUT", "OCR_BUSY", "LOCAL_TOKEN_NOT_CONFIGURED"]);
+const SOURCE_UNAVAILABLE = "Shared source is not delivering frames (minimized, hidden or locked). Sampling resumes when it returns.";
 
 function message(e: unknown, fallback: string) {
   return e instanceof Error ? e.message : fallback;
@@ -69,7 +69,10 @@ export function LocalAutoSyncPanel() {
   const pauseRef = useRef(false);
   const stream = useRef<MediaStream | null>(null);
   const video = useRef<HTMLVideoElement>(null);
-  const timer = useRef<number | null>(null);
+  const timer = useRef<Ticker | null>(null);
+  const lastTick = useRef(0);
+  const gate = useRef(new ExactFrameGate());
+  const sourceUnavailable = useRef(false);
   const captureBusy = useRef(false);
   const startLock = useRef(false);
   const generation = useRef(0);
@@ -78,6 +81,7 @@ export function LocalAutoSyncPanel() {
   const query = useRef({ search: "", filter: "all" as StatusFilter });
   const saveTimer = useRef<number | null>(null);
   const drafts = useRef<Drafts>(noDrafts);
+  const flushRef = useRef<(keepalive?: boolean) => Promise<boolean>>(async () => true);
 
   const refresh = useCallback(async () => {
     const [list, counts] = await Promise.all([listEvidence(query.current.search, query.current.filter), getStats()]);
@@ -86,10 +90,17 @@ export function LocalAutoSyncPanel() {
     setStats(counts);
   }, []);
 
+  function stopSampling() {
+    timer.current?.stop();
+    timer.current = null;
+    lastTick.current = 0;
+  }
+
   function stop() {
     generation.current++;
-    if (timer.current !== null) window.clearInterval(timer.current);
-    timer.current = null;
+    stopSampling();
+    gate.current.reset();
+    sourceUnavailable.current = false;
     const old = stream.current;
     stream.current = null;
     old?.getTracks().forEach((t) => t.stop());
@@ -105,12 +116,18 @@ export function LocalAutoSyncPanel() {
     alive.current = true;
     refresh().then(() => alive.current && setReady(true)).catch((e) => alive.current && setError(`Local evidence unavailable: ${message(e, "unknown error")}`));
     const age = window.setInterval(() => setNow(Date.now()), 1000);
+    // Persist corrections typed just before reload/close (debounced save may not have fired yet).
+    const onPageHide = () => void flushRef.current(true);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       alive.current = false;
       stop();
       window.clearInterval(age);
+      window.removeEventListener("pagehide", onPageHide);
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
     };
+    // Mount/unmount only, like the reference: stop() reads refs and guarded setters, so a stale closure is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
 
   // Search and filter are server-side queries (debounced like typing in the reference search box).
@@ -163,10 +180,14 @@ export function LocalAutoSyncPanel() {
             sourceMode: item.sourceMode, capturedAt: item.capturedAt, sourceLabel: item.sourceLabel,
             originalDimensions: item.originalDimensions, crop: item.crop,
           });
-          if (result.duplicate) setSkipped((n) => n + 1);
+          if (result.duplicate) {
+            setSkipped((n) => n + 1);
+            if (result.capture.trashed) setError(`${item.file.name}: identical screenshot is already saved but is in Trash. Use the Trash filter to restore it.`);
+          }
         } catch (e) {
           const code = e instanceof OcrRequestError ? e.code : "UNKNOWN_ERROR";
-          if (PAUSE_ON.has(code)) {
+          const action = queueErrorAction(code);
+          if (action === "pause") {
             // Backpressure: keep the item, pause the queue and stop sampling until the operator resumes.
             queue.current.unshift(item);
             setPending(queue.current.length);
@@ -176,7 +197,9 @@ export function LocalAutoSyncPanel() {
             setError(code === "STORAGE_FULL" ? message(e, "Storage full") : `${message(e, "Processing failed")} Remaining queue is paused; press Resume to retry.`);
             break;
           }
-          setError(`${item.file.name}: ${message(e, "Local OCR failed")}`);
+          setError(action === "recorded"
+            ? `${item.file.name}: ${message(e, "Local OCR failed")} The failed reading was saved; use Retry OCR on it.`
+            : `${item.file.name}: ${message(e, "Local OCR failed")} This file was not accepted.`);
         }
         await refresh().catch(() => undefined);
       }
@@ -244,7 +267,9 @@ export function LocalAutoSyncPanel() {
       if (!element) throw new Error("Source preview unavailable");
       element.srcObject = shared;
       await element.play();
+      const sized = await waitForVideoSize(element);
       if (stream.current !== shared || generation.current !== token) return;
+      if (!sized) throw new Error("The shared source did not report a frame size. Stop and share it again.");
       const size = { width: element.videoWidth, height: element.videoHeight };
       setSource({ ...size, label: track?.label || "Shared source" });
       setCrop({ x0: 0, y0: 0, x1: size.width, y1: size.height });
@@ -252,7 +277,7 @@ export function LocalAutoSyncPanel() {
       setConfirmed(false);
     } catch (e) {
       stop();
-      if (alive.current) setError(message(e, "Screen sharing failed"));
+      if (alive.current) setError(describeCaptureError(e));
     } finally {
       startLock.current = false;
       if (alive.current) setStarting(false);
@@ -266,19 +291,47 @@ export function LocalAutoSyncPanel() {
       setError("Source dimensions or crop mismatch. Reselect source/crop.");
       return;
     }
-    if (timer.current !== null) window.clearInterval(timer.current);
+    stopSampling();
+    gate.current.reset();
+    sourceUnavailable.current = false;
     const expected = source;
     const selectedCrop = { ...crop };
     const selectedAccount = account.trim() || "Unlabelled account";
     setConfirmed(true);
     const sample = async () => {
-      // Backpressure: never sample while paused, processing or with frames still queued.
-      if (captureBusy.current || pauseRef.current || processing.current || queue.current.length || element.readyState < 2 || stream.current !== shared) return;
-      if (!captureMatches(element.videoWidth, element.videoHeight, expected, selectedCrop)) {
-        if (timer.current !== null) window.clearInterval(timer.current);
-        timer.current = null;
+      if (stream.current !== shared) return;
+      // Reference capture policy: a long gap between ticks (sleep, throttling) requires re-approval.
+      const tickAt = Date.now();
+      const gap = lastTick.current ? tickAt - lastTick.current : 0;
+      lastTick.current = tickAt;
+      if (gap > CAPTURE_GAP_MS) {
+        stopSampling();
         setConfirmed(false);
-        setError("Source paused: dimensions/crop changed. Stop and reselect the source.");
+        setError(`Capture gap of ${Math.round(gap / 1000)}s detected (computer asleep or tab throttled). Review the crop and confirm again to resume.`);
+        return;
+      }
+      // Backpressure: never sample while paused, processing or with frames still queued.
+      if (captureBusy.current || pauseRef.current || processing.current || queue.current.length || element.readyState < 2) return;
+      const track = shared.getVideoTracks()[0];
+      if (track && (track.muted || track.readyState === "ended")) {
+        if (!sourceUnavailable.current) setError(SOURCE_UNAVAILABLE);
+        sourceUnavailable.current = true;
+        return;
+      }
+      if (sourceUnavailable.current) {
+        sourceUnavailable.current = false;
+        setError((current) => (current === SOURCE_UNAVAILABLE ? "" : current));
+      }
+      if (!captureMatches(element.videoWidth, element.videoHeight, expected, selectedCrop)) {
+        // Never resume on a changed source automatically: adopt the new size, reset the crop, require confirmation.
+        stopSampling();
+        setConfirmed(false);
+        const next = { width: element.videoWidth, height: element.videoHeight, label: expected.label };
+        if (next.width > 0 && next.height > 0) {
+          setSource(next);
+          setCrop({ x0: 0, y0: 0, x1: next.width, y1: next.height });
+        }
+        setError(`Source paused: dimensions/crop changed (now ${next.width} × ${next.height}). Review the crop and confirm again.`);
         return;
       }
       captureBusy.current = true;
@@ -289,6 +342,11 @@ export function LocalAutoSyncPanel() {
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("Capture canvas unavailable");
         ctx.drawImage(element, selectedCrop.x0, selectedCrop.y0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+        // Exact-pixel gate: identical frames would be exact SHA-256 duplicates; skip them before upload.
+        if (gate.current.unchanged(canvas.width, canvas.height, ctx.getImageData(0, 0, canvas.width, canvas.height).data)) {
+          setSkipped((n) => n + 1);
+          return;
+        }
         const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
         if (!blob) throw new Error("Frame encoding failed");
         if (stream.current === shared && alive.current) {
@@ -305,7 +363,7 @@ export function LocalAutoSyncPanel() {
         captureBusy.current = false;
       }
     };
-    timer.current = window.setInterval(() => void sample(), CAPTURE_INTERVAL_MS);
+    timer.current = startTicker(CAPTURE_INTERVAL_MS, () => void sample());
     void sample();
   }
 
@@ -315,7 +373,7 @@ export function LocalAutoSyncPanel() {
   }, []);
 
   // Persist edits to MySQL shortly after typing stops ("saved as you edit"); failed saves stay in the tab for Save / retry.
-  const flush = useCallback(async () => {
+  const flush = useCallback(async (keepalive = false) => {
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
     saveTimer.current = null;
     const pendingDrafts = drafts.current;
@@ -327,7 +385,7 @@ export function LocalAutoSyncPanel() {
         reviewer, ...(pendingDrafts.text !== null ? { text: pendingDrafts.text } : {}),
         ...(pendingDrafts.label !== null ? { screenshot_label: pendingDrafts.label } : {}),
         ...(names.length ? { observed_names: names } : {}),
-      });
+      }, keepalive);
       if (drafts.current === pendingDrafts) {
         drafts.current = noDrafts;
         setDraftState(noDrafts);
@@ -340,6 +398,10 @@ export function LocalAutoSyncPanel() {
       return false;
     }
   }, [reviewer, applyDetail]);
+
+  useEffect(() => {
+    flushRef.current = flush;
+  }, [flush]);
 
   function scheduleSave(change: Partial<{ text: string; label: string; name: [number, string] }>) {
     const base = drafts.current.id === activeId ? drafts.current : { ...noDrafts, id: activeId };

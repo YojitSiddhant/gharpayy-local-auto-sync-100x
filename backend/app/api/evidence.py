@@ -19,7 +19,7 @@ from backend.app.models.ocr import EvidenceAuditEvent
 from backend.app.ocr import evidence as ev
 from backend.app.ocr.concurrency import run_ocr_bounded
 from backend.app.ocr.image_validation import validate_image
-from backend.app.ocr.service import EngineFactory, run_ocr_attempt
+from backend.app.ocr.service import EngineFactory, recover_stale_processing, run_ocr_attempt
 
 
 def limit_json_body(request: Request, settings: Settings = Depends(get_settings)) -> None:
@@ -72,7 +72,9 @@ def _json(content, status: int = 200) -> JSONResponse:
 
 
 @router.get("")
-def list_saved(search: str = Query(default="", max_length=200), status: str = Query(default="all"), db: Session = Depends(get_db)):
+def list_saved(search: str = Query(default="", max_length=200), status: str = Query(default="all"),
+               db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    recover_stale_processing(db, settings)  # orphaned "processing" captures become retryable failures
     return _json({"items": [ev.serialize_summary(c) for c in ev.list_evidence(db, search, status)]})
 
 
