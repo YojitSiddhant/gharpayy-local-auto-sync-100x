@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
 import { Check, Download, MonitorUp, Pause, Play, RotateCcw, Save, Search, Square, Trash2, Upload } from "@/src/components/ui/icons";
-import { CAPTURE_GAP_MS, CAPTURE_INTERVAL_MS, describeCaptureError, ExactFrameGate, queueErrorAction, startTicker, waitForVideoSize, type Ticker } from "@/src/lib/capture";
+import { CAPTURE_GAP_MS, CAPTURE_INTERVAL_MS, describeCaptureError, ExactFrameGate, LOCAL_QUEUE_BYTE_LIMIT, queueErrorAction, startTicker, waitForVideoSize, type Ticker } from "@/src/lib/capture";
 import { extractScreenshot, MAX_UPLOAD_BYTES, OcrRequestError, validateScreenshotFile } from "@/src/lib/ocr-api";
 import {
   captureMatches, exportEvidence, getEvidence, getEvidenceImageUrl, getStats, listEvidence, markReviewed, proposeRegion,
@@ -26,9 +26,11 @@ type QueueItem = {
   crop?: Bounds;
 };
 const emptyBounds: Bounds = { x0: 0, y0: 0, x1: 0, y1: 0 };
-type Drafts = { id?: string; text: string | null; label: string | null; names: Record<number, string> };
+// `base` is the server revision the edit started from; `conflict` holds the latest saved version after a 409.
+type Drafts = { id?: string; base?: number; conflict?: EvidenceDetail; text: string | null; label: string | null; names: Record<number, string> };
 const noDrafts: Drafts = { text: null, label: null, names: {} };
 export const LOCAL_QUEUE_LIMIT = 100;
+const EDIT_CONFLICT_MESSAGE = "This reading was changed in another tab or by another reviewer. Your unsaved changes are kept here and were not saved.";
 const SOURCE_UNAVAILABLE = "Shared source is not delivering frames (minimized, hidden or locked). Sampling resumes when it returns.";
 
 function message(e: unknown, fallback: string) {
@@ -81,6 +83,7 @@ export function LocalAutoSyncPanel() {
   const query = useRef({ search: "", filter: "all" as StatusFilter });
   const saveTimer = useRef<number | null>(null);
   const drafts = useRef<Drafts>(noDrafts);
+  const activeRef = useRef<EvidenceDetail | undefined>(undefined);
   const flushRef = useRef<(keepalive?: boolean) => Promise<boolean>>(async () => true);
 
   const refresh = useCallback(async () => {
@@ -152,6 +155,7 @@ export function LocalAutoSyncPanel() {
     let url = "";
     getEvidence(activeId).then(async (detail) => {
       if (cancelled) return;
+      activeRef.current = detail;
       setActive(detail);
       if (detail.evidence_stored) {
         url = await getEvidenceImageUrl(detail.id);
@@ -220,6 +224,11 @@ export function LocalAutoSyncPanel() {
     }
     if (item.file.size > MAX_UPLOAD_BYTES) {
       setError(`${item.file.name}: NOT accepted; exceeds 10 MB.`);
+      return;
+    }
+    const queuedBytes = queue.current.reduce((n, q) => n + q.file.size, 0);
+    if (queuedBytes + item.file.size > LOCAL_QUEUE_BYTE_LIMIT) {
+      setError(`Queue memory limit (${LOCAL_QUEUE_BYTE_LIMIT / 1024 / 1024} MB) reached; ${item.file.name} was NOT accepted. Add it again after the queue drains.`);
       return;
     }
     queue.current.push(item);
@@ -368,6 +377,7 @@ export function LocalAutoSyncPanel() {
   }
 
   const applyDetail = useCallback((detail: EvidenceDetail) => {
+    activeRef.current = detail;
     setActive(detail);
     setRecords((rs) => rs.map((r) => (r.id === detail.id ? { ...r, label: detail.label, status: detail.status, trashed: detail.trashed } : r)));
   }, []);
@@ -380,8 +390,16 @@ export function LocalAutoSyncPanel() {
     const id = pendingDrafts.id;
     const names = Object.entries(pendingDrafts.names).map(([position, name]) => ({ position: Number(position), name }));
     if (!id || (pendingDrafts.text === null && pendingDrafts.label === null && !names.length)) return true;
+    if (pendingDrafts.conflict) {
+      // Never save over a newer version without an explicit choice in the conflict box.
+      setError(EDIT_CONFLICT_MESSAGE);
+      return false;
+    }
+    const expected = pendingDrafts.base ?? (activeRef.current?.id === id ? activeRef.current.revision : undefined);
+    if (expected === undefined) return false;
     try {
       const detail = await updateEvidence(id, {
+        expected_revision: expected,
         reviewer, ...(pendingDrafts.text !== null ? { text: pendingDrafts.text } : {}),
         ...(pendingDrafts.label !== null ? { screenshot_label: pendingDrafts.label } : {}),
         ...(names.length ? { observed_names: names } : {}),
@@ -389,11 +407,24 @@ export function LocalAutoSyncPanel() {
       if (drafts.current === pendingDrafts) {
         drafts.current = noDrafts;
         setDraftState(noDrafts);
+      } else if (drafts.current.id === id && drafts.current.base === pendingDrafts.base) {
+        // Typing continued during the save: the remaining edits now build on the revision just saved.
+        drafts.current = { ...drafts.current, base: detail.revision };
+        setDraftState(drafts.current);
       }
       applyDetail(detail);
       void getStats().then(setStats).catch(() => undefined);
       return true;
     } catch (e) {
+      if (e instanceof OcrRequestError && e.code === "EDIT_CONFLICT") {
+        const latest = await getEvidence(id).catch(() => undefined);
+        if (drafts.current.id === id) {
+          drafts.current = { ...drafts.current, conflict: latest ?? activeRef.current };
+          setDraftState(drafts.current);
+        }
+        setError(EDIT_CONFLICT_MESSAGE);
+        return false;
+      }
       setError(e instanceof OcrRequestError && e.code !== "NETWORK_ERROR" ? e.message : "Save failed; unsaved changes retained in this tab. Use Save to retry.");
       return false;
     }
@@ -404,7 +435,7 @@ export function LocalAutoSyncPanel() {
   }, [flush]);
 
   function scheduleSave(change: Partial<{ text: string; label: string; name: [number, string] }>) {
-    const base = drafts.current.id === activeId ? drafts.current : { ...noDrafts, id: activeId };
+    const base = drafts.current.id === activeId ? drafts.current : { ...noDrafts, id: activeId, base: activeRef.current?.id === activeId ? activeRef.current.revision : undefined };
     const next: Drafts = { ...base, names: { ...base.names } };
     if (change.text !== undefined) next.text = change.text;
     if (change.label !== undefined) next.label = change.label;
@@ -412,7 +443,26 @@ export function LocalAutoSyncPanel() {
     drafts.current = next;
     setDraftState(next);
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => void flush(), 800);
+    if (!next.conflict) saveTimer.current = window.setTimeout(() => void flush(), 800);
+  }
+
+  /** Conflict choice: keep the edit and explicitly save it on top of the latest saved version. */
+  function keepMyVersion() {
+    const latest = drafts.current.conflict;
+    if (!latest) return;
+    drafts.current = { ...drafts.current, base: latest.revision, conflict: undefined };
+    setDraftState(drafts.current);
+    setError("");
+    void flush();
+  }
+
+  /** Conflict choice: discard this tab's unsaved edits and show the latest saved version. */
+  function loadLatest() {
+    const latest = drafts.current.conflict;
+    drafts.current = noDrafts;
+    setDraftState(noDrafts);
+    setError("");
+    if (latest) applyDetail(latest);
   }
 
   async function act(run: () => Promise<EvidenceDetail | void>, refreshList = true) {
@@ -525,12 +575,34 @@ export function LocalAutoSyncPanel() {
             <div className="flex flex-wrap items-center justify-between gap-1 text-xs"><span>OCR engine confidence {(shown.result?.mean_confidence ?? 0).toFixed(0)}% ≠ accuracy · {((shown.result?.duration_ms ?? 0) / 1000).toFixed(1)}s</span>
               <div className="flex flex-wrap gap-1">
                 <Button size="sm" variant="outline" disabled={saving} onClick={() => void act(async () => undefined)}><Save className="size-3" />Save / retry</Button>
-                <Button size="sm" variant="outline" disabled={saving || shown.status !== "review" || trashed} onClick={() => void act(() => markReviewed(shown.id, reviewer))}><Check className="size-3" />Mark reviewed</Button>
+                <Button size="sm" variant="outline" disabled={saving || shown.status !== "review" || trashed} onClick={() => void act(async () => {
+                  const latest = activeRef.current;
+                  if (!latest || latest.id !== shown.id) return;
+                  try {
+                    return await markReviewed(shown.id, reviewer, latest.revision);
+                  } catch (e) {
+                    if (!(e instanceof OcrRequestError && e.code === "EDIT_CONFLICT")) throw e;
+                    const fresh = await getEvidence(shown.id);
+                    applyDetail(fresh);
+                    throw new Error("Not marked reviewed: the text changed since you opened it. Check the latest text, then mark reviewed again.");
+                  }
+                })}><Check className="size-3" />Mark reviewed</Button>
                 {shown.status === "error" && <Button size="sm" variant="outline" disabled={busy || pending > 0 || trashed || saving || !shown.evidence_stored} onClick={() => void act(() => retryOcr(shown.id, reviewer))}><RotateCcw className="size-3" />Retry OCR</Button>}
               </div>
             </div>
             {shown.error?.message && <p className="break-words text-xs text-destructive">{shown.error.message}</p>}
             {shown.conflicts.length > 0 && <div role="alert" className="space-y-1 border border-destructive p-2 text-xs"><strong>Association quarantined</strong>{shown.conflicts.map((c, i) => <p key={i} className="break-words">{c}</p>)}</div>}
+            {draft.conflict && (
+              <div role="alert" className="space-y-2 border border-destructive p-2 text-xs">
+                <strong>Edit conflict</strong>
+                <p className="break-words">This reading was changed in another tab or by another reviewer (now revision {draft.conflict.revision}). Your unsaved changes are kept below and were not saved.</p>
+                <details><summary>Latest saved text</summary><pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words border p-2">{draft.conflict.text}</pre></details>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={loadLatest}>Load latest (discard my changes)</Button>
+                  <Button size="sm" variant="destructive" onClick={keepMyVersion}>Save my version over latest</Button>
+                </div>
+              </div>
+            )}
             <label className="block text-xs">Corrected text · saved locally as you edit<textarea aria-label="Review OCR text" disabled={trashed || shown.status === "error" || shown.status === "processing"} className="mt-1 min-h-48 w-full resize-y rounded border bg-card p-2 text-sm leading-relaxed" value={draft.text ?? shown.text} onChange={(e) => scheduleSave({ text: e.target.value })} /></label>
             <details className="text-xs"><summary>Original OCR & correction history ({shown.corrections.length})</summary><pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words border p-2">{shown.original_text}</pre>{shown.corrections.map((h, i) => <div key={i} className="border-b py-2"><p>{h.time} · {h.reviewer} (self-described)</p><p className="whitespace-pre-wrap break-words">Old: {h.old_text}</p><p className="whitespace-pre-wrap break-words">New: {h.new_text}</p></div>)}</details>
             <h3 className="text-xs font-semibold">{phones.length} original header candidates · Unverified</h3>

@@ -37,6 +37,7 @@ export const detailSchema = summarySchema.extend({
   source_label: z.string().nullable(),
   screenshot_label: z.string().nullable(),
   received_at: z.string().nullable(),
+  revision: z.number().int().nonnegative(),
   review_status: z.literal("unverified_review_only"),
   identity_status: z.literal("unverified"),
   reviewed_at: z.string().nullable(),
@@ -124,12 +125,13 @@ export async function getEvidenceImageUrl(id: string) {
   const blob = await (await localFetch(`/${id}/image`)).blob();
   return URL.createObjectURL(blob);
 }
-export async function updateEvidence(id: string, body: { reviewer?: string; screenshot_label?: string; text?: string; observed_names?: { position: number; name: string }[] }, keepalive = false) {
+/** `expected_revision` is the revision the edit was based on; a stale one is rejected with EDIT_CONFLICT (409). */
+export async function updateEvidence(id: string, body: { expected_revision: number; reviewer?: string; screenshot_label?: string; text?: string; observed_names?: { position: number; name: string }[] }, keepalive = false) {
   // keepalive lets a save started during page unload (pagehide) complete after the tab closes.
   return parsed(await localFetch(`/${id}`, { method: "PATCH", body: JSON.stringify(body), keepalive }), detailSchema);
 }
-export async function markReviewed(id: string, reviewer: string) {
-  return parsed(await localFetch(`/${id}/review`, post({ reviewer })), detailSchema);
+export async function markReviewed(id: string, reviewer: string, expectedRevision: number) {
+  return parsed(await localFetch(`/${id}/review`, post({ reviewer, expected_revision: expectedRevision })), detailSchema);
 }
 export async function setTrashed(id: string, reason: string, reviewer: string, restore: boolean) {
   return parsed(await localFetch(`/${id}/${restore ? "restore" : "trash"}`, post({ reason, reviewer })), detailSchema);

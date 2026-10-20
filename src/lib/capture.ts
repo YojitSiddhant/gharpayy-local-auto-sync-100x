@@ -46,7 +46,7 @@ export class ExactFrameGate {
 
   /** Returns true when the frame is byte-identical to the previous accepted frame. */
   unchanged(width: number, height: number, pixels: Uint8ClampedArray): boolean {
-    const same = this.previous !== null && this.width === width && this.height === height && this.previous.length === pixels.length && this.previous.every((v, i) => v === pixels[i]);
+    const same = this.previous !== null && this.width === width && this.height === height && sameBytes(this.previous, pixels);
     if (!same) {
       this.previous = new Uint8ClampedArray(pixels);
       this.width = width;
@@ -60,6 +60,27 @@ export class ExactFrameGate {
     this.width = this.height = 0;
   }
 }
+
+/**
+ * Exact byte equality, compared four bytes at a time (≈30–40× faster than Array.prototype.every on a
+ * 1920×1080 RGBA frame; see docs/PHASE_4_HARDENING.md). Identical semantics: any differing byte → false.
+ */
+export function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
+  if (a.length !== b.length) return false;
+  const words = a.length >> 2;
+  if (a.byteOffset % 4 === 0 && b.byteOffset % 4 === 0) {
+    const x = new Uint32Array(a.buffer, a.byteOffset, words);
+    const y = new Uint32Array(b.buffer, b.byteOffset, words);
+    for (let i = 0; i < words; i++) if (x[i] !== y[i]) return false;
+  } else {
+    for (let i = 0; i < words << 2; i++) if (a[i] !== b[i]) return false;
+  }
+  for (let i = words << 2; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Upper bound on screenshot bytes held in the in-browser queue (100 items × up to 10 MB would be ~1 GB). */
+export const LOCAL_QUEUE_BYTE_LIMIT = 200 * 1024 * 1024;
 
 /** File-specific rejections: retrying the same bytes can never succeed. */
 const REJECTED = new Set([

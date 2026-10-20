@@ -25,6 +25,11 @@ def upload(client, data=None, name="synthetic-chat.png", account="Test WhatsApp"
     return response.json()["capture"]["id"]
 
 
+def rev(client, capture_id) -> int:
+    """The revision a real client would have loaded before editing."""
+    return client.get(f"{EV}/{capture_id}", headers=AUTH).json()["revision"]
+
+
 def items(client, **params):
     return client.get(EV, params=params, headers=AUTH).json()["items"]
 
@@ -66,10 +71,10 @@ def test_image_not_retained_returns_404(db_api, test_settings):
 def test_corrections_append_history_and_reopen_review(db_api):
     capture_id = upload(db_api)
     original = db_api.get(f"{EV}/{capture_id}", headers=AUTH).json()["original_text"]
-    db_api.post(f"{EV}/{capture_id}/review", json={"reviewer": "R1"}, headers=AUTH)
-    first = db_api.patch(f"{EV}/{capture_id}", json={"text": "edited", "reviewer": "R1"}, headers=AUTH).json()
-    second = db_api.patch(f"{EV}/{capture_id}", json={"text": "final", "reviewer": ""}, headers=AUTH).json()
-    same = db_api.patch(f"{EV}/{capture_id}", json={"text": "final"}, headers=AUTH).json()
+    db_api.post(f"{EV}/{capture_id}/review", json={"reviewer": "R1", "expected_revision": rev(db_api, capture_id)}, headers=AUTH)
+    first = db_api.patch(f"{EV}/{capture_id}", json={"text": "edited", "reviewer": "R1", "expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()
+    second = db_api.patch(f"{EV}/{capture_id}", json={"text": "final", "reviewer": "", "expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()
+    same = db_api.patch(f"{EV}/{capture_id}", json={"text": "final", "expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()
     assert second["original_text"] == original and second["text"] == "final"
     assert [(c["old_text"], c["new_text"], c["reviewer"]) for c in second["corrections"]] == [
         (original, "edited", "R1"), ("edited", "final", "Unidentified local reviewer")]
@@ -82,21 +87,21 @@ def test_label_and_observed_names_and_association_quarantine(db_api, fake_engine
     a = upload(db_api, name="a.png")
     fake_engine.lines = [make_line("+91 94491 90529", 140, 180), make_line("3:10 pm", 560, 184), make_line("hello", 140, 228)]
     b = upload(db_api, data=image_bytes("PNG", (720, 1280), "white"), name="b.png")
-    db_api.patch(f"{EV}/{a}", json={"screenshot_label": "Morning batch", "observed_names": [{"position": 1, "name": "Alex"}]}, headers=AUTH)
+    db_api.patch(f"{EV}/{a}", json={"screenshot_label": "Morning batch", "observed_names": [{"position": 1, "name": "Alex"}], "expected_revision": rev(db_api, a)}, headers=AUTH)
     detail_a = db_api.get(f"{EV}/{a}", headers=AUTH).json()
     assert detail_a["label"] == "Morning batch" and detail_a["rows"][0]["observed_name"] == "Alex"
     # Same reviewer name on a different phone elsewhere → quarantined association.
-    db_api.patch(f"{EV}/{b}", json={"observed_names": [{"position": 1, "name": "alex"}]}, headers=AUTH)
+    db_api.patch(f"{EV}/{b}", json={"observed_names": [{"position": 1, "name": "alex"}], "expected_revision": rev(db_api, b)}, headers=AUTH)
     detail_a = db_api.get(f"{EV}/{a}", headers=AUTH).json()
     assert any("Alex" in c and "quarantined" in c for c in detail_a["conflicts"])
-    assert db_api.patch(f"{EV}/{a}", json={"observed_names": [{"position": 99, "name": "x"}]}, headers=AUTH).status_code == 400
+    assert db_api.patch(f"{EV}/{a}", json={"observed_names": [{"position": 99, "name": "x"}], "expected_revision": rev(db_api, a)}, headers=AUTH).status_code == 400
 
 
 def test_mark_reviewed_rules(db_api):
     capture_id = upload(db_api)
-    reviewed = db_api.post(f"{EV}/{capture_id}/review", json={"reviewer": "R"}, headers=AUTH).json()
+    reviewed = db_api.post(f"{EV}/{capture_id}/review", json={"reviewer": "R", "expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()
     assert reviewed["status"] == "reviewed" and reviewed["identity_status"] == "unverified"
-    assert db_api.post(f"{EV}/{capture_id}/review", json={}, headers=AUTH).status_code == 409
+    assert db_api.post(f"{EV}/{capture_id}/review", json={"expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()["error"]["code"] == "NOT_REVIEWABLE"
     assert [i["id"] for i in items(db_api, status="reviewed")] == [capture_id]
     assert items(db_api, status="review") == []
 
@@ -109,8 +114,8 @@ def test_trash_restore_history_and_filters(db_api, mysql_session):
     trashed = db_api.post(f"{EV}/{capture_id}/trash", json={"reason": "Wrong input", "reviewer": "R"}, headers=AUTH).json()
     assert trashed["trash"]["reason"] == "Wrong input"
     assert items(db_api) == [] and [i["id"] for i in items(db_api, status="trash")] == [capture_id]
-    assert db_api.patch(f"{EV}/{capture_id}", json={"text": "x"}, headers=AUTH).status_code == 409
-    assert db_api.post(f"{EV}/{capture_id}/review", json={}, headers=AUTH).status_code == 409
+    assert db_api.patch(f"{EV}/{capture_id}", json={"text": "x", "expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()["error"]["code"] == "EVIDENCE_TRASHED"
+    assert db_api.post(f"{EV}/{capture_id}/review", json={"expected_revision": rev(db_api, capture_id)}, headers=AUTH).json()["error"]["code"] == "NOT_REVIEWABLE"
     restored = db_api.post(f"{EV}/{capture_id}/restore", json={"reason": "Keep evidence", "reviewer": "R"}, headers=AUTH).json()
     assert restored["trash"] is None and restored["text"] == restored["original_text"]
     assert [h["action"] for h in restored["trash_history"]] == ["trash", "restore"]

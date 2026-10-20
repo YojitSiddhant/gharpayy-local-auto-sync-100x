@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -18,6 +19,13 @@ from backend.app.main import app
 from backend.app.ocr.engine import OcrLine, OcrOutput, OcrWord
 
 TEST_TOKEN = "test-token-" + "x" * 40
+
+
+def mysql_unavailable(reason: str) -> None:
+    """Skip MySQL-backed tests locally, but FAIL when REQUIRE_MYSQL_TESTS=1 so missing coverage is never silent."""
+    if os.environ.get("REQUIRE_MYSQL_TESTS") == "1":
+        pytest.fail(f"MySQL-backed test required but unavailable: {reason}")
+    pytest.skip(f"MySQL-backed test skipped: {reason} (set REQUIRE_MYSQL_TESTS=1 to make this a failure)")
 
 
 def image_bytes(fmt: str = "PNG", size: tuple[int, int] = (360, 640), color: str = "white") -> bytes:
@@ -91,12 +99,12 @@ def mysql_session() -> Iterator[Session]:
     try:
         connection = engine.connect()
     except SQLAlchemyError:
-        pytest.skip("MySQL not reachable")
+        mysql_unavailable("MySQL not reachable")
     outer = connection.begin()
     if not inspect(connection).has_table("screenshot_captures"):
         outer.rollback()
         connection.close()
-        pytest.skip("Phase 2 migration not applied")
+        mysql_unavailable("evidence migrations not applied")
     session = Session(bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
     try:
         yield session

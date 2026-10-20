@@ -58,7 +58,7 @@ export const detail: EvidenceDetail = {
   ...summary,
   sha256: "a".repeat(64), mime_type: "image/png", byte_size: 20480, dimensions: { width: 720, height: 1280 },
   original_dimensions: { width: 720, height: 1280 }, crop: null, source_mode: "manual-file", source_label: null,
-  screenshot_label: "synthetic-chat.png", received_at: "2026-10-20T10:00:00+00:00", review_status: "unverified_review_only",
+  screenshot_label: "synthetic-chat.png", received_at: "2026-10-20T10:00:00+00:00", revision: 3, review_status: "unverified_review_only",
   identity_status: "unverified", reviewed_at: null, reviewed_by: null, cross_account_reuse: false, duplicate_hits: 0, evidence_stored: true,
   error: null, text: "+91 98765 43210  2:52 pm\nNeed a private room", original_text: "+91 98765 43210  2:52 pm\nNeed a private room",
   corrections: [], trash: null, trash_history: [],

@@ -1,14 +1,16 @@
 alembic==1.14.1
-cryptography==44.0.0
-fastapi==0.115.6
+cryptography==50.0.2
+fastapi==0.133.0
 httpx==0.28.1
 joblib==1.4.2
 opencv-python-headless==4.10.0.84
-Pillow==11.0.0
+Pillow==12.3.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
 PyMySQL==1.1.1
 pytesseract==0.3.13
 scikit-learn==1.6.0
 SQLAlchemy==2.0.36
+# Pinned explicitly: versions below 1.3.1 have known advisories (FastAPI's own range would allow them).
+starlette==1.3.1
 uvicorn[standard]==0.34.0

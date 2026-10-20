@@ -76,6 +76,9 @@ class ScreenshotCapture(Base):
     trashed_by: Mapped[str | None] = mapped_column(String(120))
     region_proposals: Mapped[list | None] = mapped_column(JSON)
     duplicate_hits: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Optimistic-concurrency token (migration 20261020_0003). Every evidence mutation increments it;
+    # edits must present the revision they were based on, so stale tabs cannot silently overwrite.
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     results: Mapped[list[OcrResult]] = relationship(back_populates="capture", order_by="OcrResult.attempt", cascade="all, delete-orphan")
     corrections: Mapped[list[OcrTextCorrection]] = relationship(back_populates="capture", order_by="OcrTextCorrection.created_at", cascade="all, delete-orphan")
