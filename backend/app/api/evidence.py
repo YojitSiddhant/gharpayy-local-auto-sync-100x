@@ -109,9 +109,9 @@ def purge(body: PurgeBody, db: Session = Depends(get_db), settings: Settings = D
 
 
 @router.get("/{capture_id}")
-def detail(capture_id: str, db: Session = Depends(get_db), actor: User = Depends(current_user)):
+def detail(capture_id: str, db: Session = Depends(get_db), settings: Settings = Depends(get_settings), actor: User = Depends(current_user)):
     capture = ev.get_capture(db, capture_id, actor)
-    return _json(ev.serialize_detail(db, capture) if actor.role == UserRole.SUPER_ADMIN else ev.serialize_safe_detail(db, capture))
+    return _json(ev.serialize_detail(db, capture, settings) if actor.role == UserRole.SUPER_ADMIN else ev.serialize_safe_detail(db, capture, settings))
 
 
 @router.get("/{capture_id}/image")

@@ -139,6 +139,7 @@ class OcrRowObservation(Base):
     display_header_text: Mapped[str | None] = mapped_column(String(512))
     phone_candidate_raw: Mapped[str | None] = mapped_column(String(64))
     phone_candidate_normalized: Mapped[str | None] = mapped_column(String(20), index=True)
+    phone_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     phone_status: Mapped[str] = mapped_column(String(16))
     message_preview: Mapped[str | None] = mapped_column(Text)
     preview_truncated: Mapped[bool] = mapped_column(Boolean, default=False)

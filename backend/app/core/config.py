@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # Shared secret between the Next.js server (proxy) and FastAPI. Never exposed to the browser.
     # OCR endpoints fail closed when it is missing or shorter than 32 characters.
     local_api_token: str = ""
+    duplicate_hmac_key: str = ""
     # Host headers accepted by protected endpoints (DNS-rebinding guard). Ports are ignored.
     backend_allowed_hosts: list[str] = ["localhost", "127.0.0.1", "::1"]
 

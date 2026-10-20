@@ -20,6 +20,7 @@ from backend.app.ocr.engine import OcrError, OcrTimeoutError, OcrUnavailableErro
 from backend.app.ocr.image_validation import ValidatedImage, decode_rgb
 from backend.app.ocr.storage import store_evidence
 from backend.app.ocr.whatsapp_parser import PARSER_VERSION, parse_chat_list
+from backend.app.ocr.duplicate_detection import eligible_phone, phone_fingerprint
 from backend.app.ml.shadow import run_shadow_prediction
 
 EngineFactory = Callable[[Settings], TesseractEngine]
@@ -201,6 +202,7 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
             row_right=row.row_bounds["right"], row_bottom=row.row_bounds["bottom"],
             header_bounds=row.header_bounds, ocr_confidence=row.ocr_confidence, warnings=row.warnings,
             quarantined=row.quarantined, source_lines=row.source_lines,
+            phone_fingerprint=phone_fingerprint(row.phone_normalized, settings) if eligible_phone(row.phone_normalized, row.phone_status, row.quarantined, row.display_header_text) else None,
         ))
     capture.results.append(result)
     capture.status, capture.error_code, capture.error_message = "completed", None, None
