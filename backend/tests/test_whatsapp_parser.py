@@ -45,7 +45,8 @@ def test_partial_and_foreign_headers_stay_unverified():
     assert classify_phone_header("+91 98765 4321").status == "ambiguous"
     assert classify_phone_header("98765 43210").status == "ambiguous"
     assert classify_phone_header("98765 43210").normalized is None
-    assert classify_phone_header("+44 7911 123456").status == "ambiguous"
+    assert classify_phone_header("+44 7911 123456").status == "candidate"
+    assert classify_phone_header("+44 7911 123456").normalized == "+447911123456"
     assert classify_phone_header("+91 12345 12345").status == "ambiguous"
     assert classify_phone_header("Rahul").status == "none"
 
