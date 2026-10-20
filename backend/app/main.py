@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.evidence import router as evidence_router
 from backend.app.api.auth import router as auth_router
+from backend.app.api.admin import router as admin_router
 from backend.app.api.health import health, router as health_router
 from backend.app.api.ocr import router as ocr_router
 from backend.app.core.config import get_settings
@@ -19,6 +20,7 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 app.include_router(ocr_router, prefix="/api/v1")
 app.include_router(evidence_router, prefix="/api/v1")
 app.add_api_route("/health", health, methods=["GET"])

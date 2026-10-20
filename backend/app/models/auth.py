@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, JSON, String, UniqueConstraint
 from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -68,3 +68,15 @@ class AuthSession(Base):
     last_activity_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
     revoked_at: Mapped[datetime | None] = mapped_column(Timestamp)
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class AdminAuditEvent(Base):
+    __tablename__ = "admin_audit_events"
+    __table_args__ = (Index("ix_admin_audit_events_created", "created_at"), Index("ix_admin_audit_events_target", "target_type", "target_id"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    actor_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    details: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
