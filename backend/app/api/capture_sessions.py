@@ -40,6 +40,8 @@ def current(db: Session = Depends(get_db), user: User = Depends(current_user)):
 
 @router.post("")
 def start(body: StartBody, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    # Lock the user row so concurrent start requests cannot both pass the active-session check.
+    user = db.scalar(select(User).where(User.id == user.id).with_for_update()) or user
     if not user.is_active: raise ApiError(403, "USER_DISABLED", "This account is disabled.")
     if active_for_user(db, user): raise ApiError(409, "CAPTURE_ALREADY_ACTIVE", "Stop the current capture session before starting another.")
     zone_id = body.zone_id if user.role == UserRole.SUPER_ADMIN else user.zone_id
