@@ -9,7 +9,6 @@ from starlette.concurrency import run_in_threadpool
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
-from backend.app.core.auth import current_user
 from backend.app.models.auth import CaptureSession, User
 from sqlalchemy import select
 from backend.app.db.session import get_db
@@ -112,15 +111,10 @@ async def extract_screenshot(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     engine_factory: EngineFactory = Depends(get_engine_factory),
-    user: User = Depends(current_user),
 ) -> JSONResponse:
     """Body: raw image bytes. Headers: Content-Type (image/png|jpeg|webp), X-Account-Label, optional X-Filename,
     and optional capture metadata (X-Source-Mode, X-Captured-At, X-Source-Label, X-Screenshot-Label,
     X-Original-Width, X-Original-Height, X-Crop) — all URI-encoded where textual."""
-    session_id = request.headers.get("x-capture-session-id", "").strip()
-    session = db.scalar(select(CaptureSession).where(CaptureSession.id == session_id, CaptureSession.user_id == user.id).with_for_update()) if session_id else None
-    if settings.app_env != "test" and (session is None or session.status != "active" or session.expires_at <= datetime.now(timezone.utc).replace(tzinfo=None) or not user.is_active or not session.zone.is_active):
-        raise ApiError(409, "CAPTURE_SESSION_REQUIRED", "A valid active capture session is required.")
     account_label = _header_text(request, ACCOUNT_HEADER, MAX_ACCOUNT_LABEL)
     if not account_label:
         raise ApiError(400, "ACCOUNT_LABEL_REQUIRED", "A WhatsApp account label is required.")
@@ -128,6 +122,6 @@ async def extract_screenshot(
     meta = _capture_meta(request)
     data = await _read_capped_body(request, settings.ocr_max_upload_bytes)
     image = await run_in_threadpool(validate_image, data, request.headers.get("content-type"), image_limits(settings))
-    capture, duplicate = await run_ocr_bounded(settings, process_screenshot, db, image, account_label, filename, settings, engine_factory, meta, owner=user, capture_session_id=session.id if session else None)
+    capture, duplicate = await run_ocr_bounded(settings, process_screenshot, db, image, account_label, filename, settings, engine_factory, meta)
     body = build_extract_response(capture, duplicate).model_dump(mode="json")
     return JSONResponse(status_code=200 if duplicate else 201, content=body, headers={"Cache-Control": "no-store"})
