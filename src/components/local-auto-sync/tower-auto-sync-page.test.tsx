@@ -152,7 +152,7 @@ describe("TowerAutoSyncPage capture strip and extracted chats", () => {
     api.state.records = [cap(1), cap(2), cap(3)];
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
     await waitFor(() => expect(cards()).toHaveLength(3));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Includes every screenshot shown above"));
+    await waitFor(() => expect(screen.getByText("3 screenshots")).toBeInTheDocument());
     expect(screen.getByText("Message from cap-3")).toBeInTheDocument();
     // Checked only after later renders, so the arrival effect has certainly run and did not scroll.
     expect(scrollTo).not.toHaveBeenCalled();
