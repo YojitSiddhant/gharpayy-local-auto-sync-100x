@@ -77,6 +77,12 @@ export const detailSchema = summarySchema.extend({
 export type EvidenceSummary = z.infer<typeof summarySchema>;
 export type EvidenceStats = z.infer<typeof statsSchema>;
 export type EvidenceDetail = z.infer<typeof detailSchema>;
+const clearProposalSchema = z.object({ position: z.number(), field_name: z.enum(["phone", "message"]), original_value: z.string().nullable(), suggested_value: z.string(), confidence: z.number().nullable().optional(), uncertain: z.boolean() });
+export const clearMessageSchema = z.object({ capture_id: z.string(), model: z.string(), proposals: z.array(clearProposalSchema), diagnostics: z.object({ candidate_count: z.number(), returned_count: z.number(), unmatched_count: z.number(), rejected_count: z.number() }).optional() });
+export type ClearMessageResult = z.infer<typeof clearMessageSchema>;
+const clearDiagnosticSchema = z.object({ batch: z.number(), provider: z.literal("groq"), status: z.enum(["success", "failure"]), phase: z.string(), category: z.string().nullable(), status_code: z.number().nullable(), safe_corrections: z.number(), review_proposals: z.number() });
+const clearMessageBatchSchema = z.object({ message: z.string(), messages_cleaned: z.number(), phones_formatted: z.number(), review_count: z.number(), review_unavailable_count: z.number(), rows_analyzed: z.number(), batches_successful: z.number(), batches_failed: z.number(), batches_total: z.number(), screenshots_processed: z.number(), screenshots_analyzed: z.number(), screenshots_failed: z.number(), rate_limited: z.boolean(), review_items: z.array(z.object({ capture_id: z.string(), position: z.number(), field_name: z.enum(["phone", "message"]) })), failures: z.array(clearDiagnosticSchema), diagnostics: z.array(clearDiagnosticSchema) });
+export type ClearMessageBatchResult = z.infer<typeof clearMessageBatchSchema>;
 
 async function localFetch(path: string, init: RequestInit = {}): Promise<Response> {
   let response: Response;
@@ -127,6 +133,12 @@ export async function getStats() {
 }
 export async function getEvidence(id: string) {
   return parsed(await localFetch(`/${id}`), detailSchema);
+}
+export async function clearMessage(id: string, reviewer: string): Promise<ClearMessageResult> {
+  return parsed(await localFetch(`/${id}/clear-message`, post({ reviewer })), clearMessageSchema);
+}
+export async function clearMessageAll(reviewer: string): Promise<ClearMessageBatchResult> {
+  return parsed(await localFetch("/clear-message-all", post({ reviewer })), clearMessageBatchSchema);
 }
 export async function saveFieldVerification(id: string, body: { position: number; field_name: "phone" | "message" | "timestamp"; status: "verified" | "missing" | "unreadable" | "incorrect"; verified_value?: string | null; dataset_split: "unassigned" | "training" | "evaluation"; approved_for_dataset: boolean; reviewer: string; expected_revision?: number }) {
   return parsed(await localFetch(`/${id}/field-verifications`, post(body)), detailSchema);

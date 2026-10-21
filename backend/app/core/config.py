@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     message_postcorrect_mode: Literal["off", "shadow", "on"] = "off"
     ocr_max_concurrency: int = 1
     ocr_queue_wait_seconds: float = 10.0
+    ocr_processing_mode: Literal["LOCAL_ONLY", "SINGLE_PROVIDER", "MULTI_PROVIDER"] = "LOCAL_ONLY"
+    ocr_single_provider: Literal["gemini", "groq"] | None = None
+    ocr_external_transmission_enabled: bool = False
+    gemini_api_key: str = ""
+    groq_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    groq_vision_model: str = "qwen/qwen3.8-27b"
+    ocr_cloud_request_budget: int = 2
+    ocr_cloud_timeout_seconds: float = 15.0
 
     # Experimental local classifier. Shadow mode is opt-in and never changes OCR output.
     ml_mode: Literal["off", "shadow"] = "off"

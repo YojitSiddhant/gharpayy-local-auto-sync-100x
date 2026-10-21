@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import ApiError
 from backend.app.models.auth import User, UserRole, Zone
-from backend.app.models.ocr import EvidenceAuditEvent, OcrResult, OcrRowObservation, OcrTextCorrection, ScreenshotCapture, utcnow
+from backend.app.models.ocr import EvidenceAuditEvent, OcrFieldVerification, OcrFieldVerificationAudit, OcrResult, OcrRowObservation, OcrTextCorrection, ScreenshotCapture, utcnow
 from backend.app.ocr.duplicate_detection import key_configured
 from backend.app.ocr.service import storage_usage
 from backend.app.schemas.ocr import iso, result_out, row_out
@@ -380,6 +380,14 @@ def purge_trash(db: Session, settings: Settings, reviewer: str | None) -> int:
     who = reviewer_name(reviewer)
     trashed = list(db.scalars(select(ScreenshotCapture).where(ScreenshotCapture.trashed_at.is_not(None))))
     keys = {c.evidence_storage_key for c in trashed if c.evidence_storage_key}
+    capture_ids = [c.id for c in trashed]
+    row_ids = list(db.scalars(select(OcrRowObservation.id).join(OcrResult, OcrRowObservation.ocr_result_id == OcrResult.id).where(OcrResult.capture_id.in_(capture_ids)))) if capture_ids else []
+    verification_ids = list(db.scalars(select(OcrFieldVerification.id).where(OcrFieldVerification.observation_id.in_(row_ids)))) if row_ids else []
+    # Migration 0009 deliberately uses RESTRICT for the current verification row;
+    # remove its append-only audits and current labels before the parent evidence.
+    if verification_ids:
+        db.execute(delete(OcrFieldVerificationAudit).where(OcrFieldVerificationAudit.verification_id.in_(verification_ids)))
+        db.execute(delete(OcrFieldVerification).where(OcrFieldVerification.id.in_(verification_ids)))
     for capture in trashed:
         _audit(db, capture, "purge", who, "Explicit permanent purge of trashed evidence")
         db.delete(capture)

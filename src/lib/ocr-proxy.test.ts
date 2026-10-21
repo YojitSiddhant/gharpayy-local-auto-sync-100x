@@ -48,6 +48,8 @@ describe("evidence proxy allowlist", () => {
     expect(resolveEvidencePath("GET", ["evidence", id, "image"], q())).toBe(`evidence/${id}/image`);
     expect(resolveEvidencePath("PATCH", ["evidence", id], q())).toBe(`evidence/${id}`);
     expect(resolveEvidencePath("POST", ["evidence", id, "trash"], q())).toBe(`evidence/${id}/trash`);
+    expect(resolveEvidencePath("POST", ["evidence", id, "clear-message"], q())).toBe(`evidence/${id}/clear-message`);
+    expect(resolveEvidencePath("POST", ["evidence", "clear-message-all"], q())).toBe("evidence/clear-message-all");
     expect(resolveEvidencePath("POST", ["evidence", "purge-trash"], q())).toBe("evidence/purge-trash");
   });
   it("refuses traversal, unknown actions and wrong methods", () => {
