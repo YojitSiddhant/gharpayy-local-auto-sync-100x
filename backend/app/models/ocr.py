@@ -162,6 +162,44 @@ class OcrRowObservation(Base):
     observed_name: Mapped[str | None] = mapped_column(String(255))
 
     result: Mapped[OcrResult] = relationship(back_populates="rows")
+    # Migration 0009 is intentionally optional during development. The database
+    # FK owns cascade cleanup when that migration is present, so purging legacy
+    # captures must not lazy-load this future table while 0009 is unapplied.
+    field_verifications: Mapped[list[OcrFieldVerification]] = relationship(back_populates="observation", cascade="all, delete-orphan", passive_deletes=True)
+
+
+class OcrFieldVerification(Base):
+    """Current human label for one OCR field; raw OCR remains on the observation."""
+    __tablename__ = "ocr_field_verifications"
+    __table_args__ = (
+        UniqueConstraint("observation_id", "field_name", name="uq_ocr_field_verifications_observation_field"),
+        CheckConstraint("field_name IN ('phone','message','timestamp')", name="ck_ocr_field_verifications_field"),
+        CheckConstraint("status IN ('verified','missing','unreadable','incorrect')", name="ck_ocr_field_verifications_status"),
+        CheckConstraint("dataset_split IN ('unassigned','training','evaluation')", name="ck_ocr_field_verifications_split"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    observation_id: Mapped[str] = mapped_column(ForeignKey("ocr_row_observations.id", ondelete="RESTRICT"), index=True)
+    field_name: Mapped[str] = mapped_column(String(16))
+    observed_value: Mapped[str | None] = mapped_column(LongText)
+    verified_value: Mapped[str | None] = mapped_column(LongText)
+    status: Mapped[str] = mapped_column(String(16))
+    dataset_split: Mapped[str] = mapped_column(String(16), default="unassigned", server_default="unassigned")
+    approved_for_dataset: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    reviewer: Mapped[str] = mapped_column(String(120))
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow, onupdate=utcnow)
+    observation: Mapped[OcrRowObservation] = relationship(back_populates="field_verifications")
+
+
+class OcrFieldVerificationAudit(Base):
+    __tablename__ = "ocr_field_verification_audits"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    verification_id: Mapped[str] = mapped_column(ForeignKey("ocr_field_verifications.id", ondelete="CASCADE"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSON)
+    reviewer: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(Timestamp, default=utcnow)
 
 
 class OcrTextCorrection(Base):

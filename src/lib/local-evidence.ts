@@ -7,6 +7,7 @@ export type StatusFilter = (typeof STATUS_FILTERS)[number];
 export type Bounds = { x0: number; y0: number; x1: number; y1: number };
 
 const statusSchema = z.enum(["processing", "review", "reviewed", "error"]);
+const fieldVerificationSchema = z.object({ field_name: z.enum(["phone", "message", "timestamp"]), observed_value: z.string().nullable(), verified_value: z.string().nullable(), status: z.enum(["verified", "missing", "unreadable", "incorrect"]), dataset_split: z.enum(["unassigned", "training", "evaluation"]), approved_for_dataset: z.boolean(), reviewer: z.string(), revision: z.number() });
 
 export const summarySchema = z.object({
   id: z.string(),
@@ -61,7 +62,7 @@ export const detailSchema = summarySchema.extend({
     lines: z.array(z.record(z.string(), z.unknown())),
     warnings: z.array(z.string()),
   }).passthrough().nullable(),
-  rows: z.array(rowSchema),
+  rows: z.array(rowSchema.extend({ field_verifications: z.array(fieldVerificationSchema).optional() })),
   conflicts: z.array(z.string()),
   quarantined: z.boolean(),
   signals: z.array(z.object({ kind: z.string(), evidence: z.string() })),
@@ -116,11 +117,19 @@ export async function listEvidence(search: string, status: StatusFilter) {
   if (search.trim()) query.set("search", search.trim());
   return (await parsed(await localFetch(`?${query}`), z.object({ items: z.array(summarySchema) }))).items;
 }
+export async function listEvidencePage(search: string, status: StatusFilter, page = 1, pageSize = 25) {
+  const query = new URLSearchParams({ status, page: String(page), page_size: String(pageSize) });
+  if (search.trim()) query.set("search", search.trim());
+  return parsed(await localFetch(`?${query}`), z.object({ items: z.array(summarySchema), page: z.number(), page_size: z.number(), has_more: z.boolean() }));
+}
 export async function getStats() {
   return parsed(await localFetch("/stats"), statsSchema);
 }
 export async function getEvidence(id: string) {
   return parsed(await localFetch(`/${id}`), detailSchema);
+}
+export async function saveFieldVerification(id: string, body: { position: number; field_name: "phone" | "message" | "timestamp"; status: "verified" | "missing" | "unreadable" | "incorrect"; verified_value?: string | null; dataset_split: "unassigned" | "training" | "evaluation"; approved_for_dataset: boolean; reviewer: string; expected_revision?: number }) {
+  return parsed(await localFetch(`/${id}/field-verifications`, post(body)), detailSchema);
 }
 /** Load the protected screenshot as a same-origin object URL (never a public file path). */
 export async function getEvidenceImageUrl(id: string) {

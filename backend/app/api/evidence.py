@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.api.ocr import get_engine_factory, image_limits
@@ -15,7 +16,7 @@ from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import ApiError
 from backend.app.core.security import require_local_api_access
 from backend.app.db.session import get_db
-from backend.app.models.ocr import EvidenceAuditEvent
+from backend.app.models.ocr import EvidenceAuditEvent, OcrFieldVerification, OcrFieldVerificationAudit
 from backend.app.ocr import evidence as ev
 from backend.app.ocr.concurrency import run_ocr_bounded
 from backend.app.ocr.image_validation import validate_image
@@ -77,6 +78,16 @@ class ProposalBody(BaseModel):
 class PurgeBody(Reviewer):
     confirm: Literal[True]
 
+class FieldVerificationBody(BaseModel):
+    position: int = Field(ge=1)
+    field_name: Literal["phone", "message", "timestamp"]
+    status: Literal["verified", "missing", "unreadable", "incorrect"]
+    verified_value: str | None = Field(default=None, max_length=5000)
+    dataset_split: Literal["unassigned", "training", "evaluation"] = "unassigned"
+    approved_for_dataset: bool = False
+    reviewer: str = Field(min_length=1, max_length=120)
+    expected_revision: int | None = Field(default=None, ge=1)
+
 
 def _json(content, status: int = 200) -> JSONResponse:
     return JSONResponse(content=content, status_code=status, headers=NO_STORE)
@@ -84,9 +95,12 @@ def _json(content, status: int = 200) -> JSONResponse:
 
 @router.get("")
 def list_saved(search: str = Query(default="", max_length=200), status: str = Query(default="all"),
+               page: int = Query(default=1, ge=1, le=10000), page_size: int = Query(default=25, ge=1, le=100),
                db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     recover_stale_processing(db, settings)  # orphaned "processing" captures become retryable failures
-    return _json({"items": [ev.serialize_summary(c) for c in ev.list_evidence(db, search, status)]})
+    items = ev.list_evidence(db, search, status, offset=(page - 1) * page_size, limit=page_size)
+    return _json({"items": [ev.serialize_summary(c) for c in items], "page": page, "page_size": page_size,
+                  "has_more": len(items) == page_size})
 
 
 @router.get("/stats")
@@ -131,6 +145,27 @@ def update(capture_id: str, body: EvidencePatch, db: Session = Depends(get_db)):
 def review(capture_id: str, body: ReviewBody, db: Session = Depends(get_db)):
     capture = ev.get_capture(db, capture_id)
     ev.mark_reviewed(db, capture, body.reviewer, body.expected_revision)
+    return _json(ev.serialize_detail(db, capture))
+
+@router.post("/{capture_id}/field-verifications")
+def field_verification(capture_id: str, body: FieldVerificationBody, db: Session = Depends(get_db)):
+    capture = ev.get_capture(db, capture_id)
+    result = ev.latest_result(capture)
+    row = next((item for item in (result.rows if result else []) if item.position == body.position), None)
+    if row is None: raise ApiError(404, "NOT_FOUND", "Evidence was not found.")
+    if body.status in ("verified", "incorrect") and not (body.verified_value and body.verified_value.strip()): raise ApiError(422, "INVALID_LABEL", "A human-entered value is required for this status.")
+    if body.status in ("missing", "unreadable") and body.verified_value: raise ApiError(422, "INVALID_LABEL", "Missing or unreadable fields cannot contain a value.")
+    label = db.scalar(select(OcrFieldVerification).where(OcrFieldVerification.observation_id == row.id, OcrFieldVerification.field_name == body.field_name).with_for_update())
+    if label and body.expected_revision is not None and label.revision != body.expected_revision: raise ApiError(409, "EDIT_CONFLICT", "This label changed in another tab.")
+    observed = {"phone": row.phone_candidate_raw, "message": row.message_preview, "timestamp": row.visible_timestamp_text}[body.field_name]
+    payload = {"field_name": body.field_name, "observed_value": observed, "verified_value": body.verified_value.strip() if body.verified_value else None, "status": body.status, "dataset_split": body.dataset_split, "approved_for_dataset": body.approved_for_dataset}
+    reviewer = body.reviewer.strip()
+    if label is None:
+        label = OcrFieldVerification(observation_id=row.id, revision=1, reviewer=reviewer, **payload); db.add(label); db.flush()
+    else:
+        label.revision += 1; label.reviewer = reviewer
+        for key, value in payload.items(): setattr(label, key, value)
+    db.add(OcrFieldVerificationAudit(verification_id=label.id, revision=label.revision, payload=payload, reviewer=reviewer)); db.commit()
     return _json(ev.serialize_detail(db, capture))
 
 

@@ -3,7 +3,7 @@ import { ALLOWED_IMAGE_TYPES, CLIENT_HEADER, CLIENT_HEADER_VALUE, MAX_UPLOAD_BYT
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals"]);
+const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals", "field-verifications"]);
 const QUERY_PARAMS = ["search", "status", "include_trash", "zone_id", "user_id", "date_from", "date_to", "page", "page_size"];
 export const JSON_BODY_LIMIT = 1024 * 1024;
 export const UPLOAD_METADATA_HEADERS = [
@@ -65,7 +65,6 @@ export function checkProxyRequest(headers: Headers): ProxyRejection | null {
 
 /** Map an allowlisted /api/local/evidence/... request onto the FastAPI path. Anything else is refused. */
 export function resolveEvidencePath(method: string, segments: string[], search: URLSearchParams): string | null {
-  if (segments[0] === "analytics" && method === "GET" && (segments.length === 1 || (segments.length === 2 && segments[1] === "cleanup-preview"))) return segments.join("/");
   if (segments[0] !== "evidence" || segments.length > 3) return null;
   const [, first, second] = segments;
   let path: string | null = null;
