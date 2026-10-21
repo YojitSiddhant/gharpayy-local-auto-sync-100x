@@ -1,0 +1,10 @@
+# Render/Linux deployment overlay. Keep the base application pins in requirements.txt.
+-r requirements.txt
+
+# Matches the existing project-local PaddleOCR runtime.
+paddlepaddle==3.2.0
+paddleocr==3.7.0
+paddlex==3.7.2
+numpy==2.3.5
+shapely==2.2.0
+PyYAML==6.0.2
