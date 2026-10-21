@@ -5,7 +5,7 @@ import { detail as baseDetail, sampleRows, summary } from "@/src/test-fixtures/o
 
 const getEvidence = vi.fn<(id: string) => Promise<EvidenceDetail>>();
 vi.mock("@/src/lib/local-evidence", () => ({ getEvidence: (id: string) => getEvidence(id) }));
-const { AllExtractedChats, groupExtractedChats, orderCaptures, labelContrast, presentLabelColor } = await import("@/src/components/local-auto-sync/tower-extracted-chats");
+const { AllExtractedChats, groupExtractedChats, orderCaptures, labelContrast, presentLabelColor, isCompleteObservation } = await import("@/src/components/local-auto-sync/tower-extracted-chats");
 
 type Row = EvidenceDetail["rows"][number];
 const good = sampleRows[0], ambiguous = sampleRows[1];
@@ -69,6 +69,15 @@ describe("groupExtractedChats", () => {
     const entries = groupExtractedChats([{ capture: first, detail: rec(first, [row(1, { phone: { raw: null, normalized: null, status: "none" }, display_header_text: "Ravi", message_preview: "call me on +91 98765 43210" })]) }]);
     expect(entries).toEqual([]);
   });
+
+  it("rejects placeholder messages while preserving valid observations", () => {
+    const entries = groupExtractedChats([{ capture: first, detail: rec(first, [
+      phoneRow(1, "+919876543210", { message_preview: "Message not captured" }),
+      phoneRow(2, "+919811112222", { message_preview: "A genuine message" }),
+    ]) }]);
+    expect(entries.map((entry) => entry.kind === "number" && entry.phone)).toEqual(["+919811112222"]);
+    expect(isCompleteObservation(row(3, { phone: { raw: null, normalized: null, status: "none" }, message_preview: "A genuine message" }))).toBe(false);
+  });
 });
 
 describe("AllExtractedChats", () => {
@@ -84,6 +93,29 @@ describe("AllExtractedChats", () => {
     render(<AllExtractedChats captures={[]} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
     expect(screen.getByText("No screenshots captured yet.")).toBeInTheDocument();
     expect(getEvidence).not.toHaveBeenCalled();
+  });
+
+  it("shows Clean Incomplete Chats and reports the actual excluded count", async () => {
+    getEvidence.mockImplementation(async () => rec(captures[0], [
+      phoneRow(1, "+919811112222", { message_preview: "Complete" }),
+      phoneRow(2, "+919822223333", { message_preview: "Message not captured" }),
+      row(3, { phone: { raw: null, normalized: null, status: "none" }, message_preview: "Missing phone" }),
+    ]));
+    render(<AllExtractedChats captures={captures.slice(0, 1)} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
+    await screen.findByRole("button", { name: "Open +919811112222 in screenshot #1" });
+    const clean = screen.getByRole("button", { name: "Clean Incomplete Chats" });
+    expect(screen.queryByRole("button", { name: "Clear Message" })).not.toBeInTheDocument();
+    fireEvent.click(clean);
+    expect(await screen.findByText("2 incomplete observations excluded. Original OCR evidence preserved.")).toBeInTheDocument();
+    expect(screen.getByText("Complete")).toBeInTheDocument();
+  });
+
+  it("reports that the list is already clean when no observations are incomplete", async () => {
+    getEvidence.mockImplementation(async () => rec(captures[0], [phoneRow(1, "+919811112222", { message_preview: "Complete" })]));
+    render(<AllExtractedChats captures={captures.slice(0, 1)} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
+    await screen.findByRole("button", { name: "Open +919811112222 in screenshot #1" });
+    fireEvent.click(screen.getByRole("button", { name: "Clean Incomplete Chats" }));
+    expect(await screen.findByText("No incomplete observations found. Your chat list is already clean.")).toBeInTheDocument();
   });
 
   it("is held as awaiting Stop while capturing and loads nothing", () => {
