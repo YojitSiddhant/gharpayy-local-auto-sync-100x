@@ -106,7 +106,8 @@ describe("AllExtractedChats", () => {
     const clean = screen.getByRole("button", { name: "Clean Incomplete Chats" });
     expect(screen.queryByRole("button", { name: "Clear Message" })).not.toBeInTheDocument();
     fireEvent.click(clean);
-    expect(await screen.findByText("2 incomplete observations excluded. Original OCR evidence preserved.")).toBeInTheDocument();
+    expect(await screen.findByText(/2 incomplete observations excluded/)).toBeInTheDocument();
+    expect(screen.queryByText(/Original OCR evidence preserved/)).not.toBeInTheDocument();
     expect(screen.getByText("Complete")).toBeInTheDocument();
   });
 
@@ -115,7 +116,8 @@ describe("AllExtractedChats", () => {
     render(<AllExtractedChats captures={captures.slice(0, 1)} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
     await screen.findByRole("button", { name: "Open +919811112222 in screenshot #1" });
     fireEvent.click(screen.getByRole("button", { name: "Clean Incomplete Chats" }));
-    expect(await screen.findByText("No incomplete observations found. Your chat list is already clean.")).toBeInTheDocument();
+    expect(await screen.findByText("1 screenshot · 0 incomplete observations excluded")).toBeInTheDocument();
+    expect(screen.queryByText(/Your chat list is already clean/)).not.toBeInTheDocument();
   });
 
   it("is held as awaiting Stop while capturing and loads nothing", () => {
@@ -146,7 +148,7 @@ describe("AllExtractedChats", () => {
     expect(within(observations[1]).getByText("Second view")).toBeInTheDocument();
     expect(within(observations[1]).getByText("2:55 pm")).toBeInTheDocument();
     expect(within(list).queryByText("Number needs review")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Includes every screenshot shown above");
+    expect(screen.getByText("2 screenshots")).toBeInTheDocument();
     fireEvent.click(within(observations[1]).getByRole("button", { name: "Open screenshot #2 details" }));
     expect(onOpen).toHaveBeenCalledWith("s2");
     expect(onOpen).toHaveBeenCalledWith("s2");
@@ -230,7 +232,7 @@ describe("AllExtractedChats", () => {
     records.s3 = rec(withProcessing[2], [phoneRow(1, "+919800000003")]);
     rerender(<AllExtractedChats captures={orderCaptures([...captures, cap("s3", "2026-10-20T10:00:20Z", "review")])} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
     expect(await screen.findByText("+919800000003")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Includes every screenshot shown above");
+    expect(screen.getByText("3 screenshots")).toBeInTheDocument();
   });
 
   it("reloads a capture when its status changes and marks reviewed screenshots", async () => {

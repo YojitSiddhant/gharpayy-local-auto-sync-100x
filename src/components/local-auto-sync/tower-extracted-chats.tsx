@@ -55,7 +55,7 @@ const stamp = (c: EvidenceSummary) => (c.captured_at ? new Date(c.captured_at).t
 export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: { captures: OrderedCapture[]; capturing: boolean; pendingJobs: number; onOpen: (id: string) => void }) {
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [theme, setTheme] = useState<Theme>("dark");
-  const [cleanupMessage, setCleanupMessage] = useState("");
+  const [, setCleanupMessage] = useState(""), [cleanupExcluded, setCleanupExcluded] = useState<number | null>(null);
   const inflight = useRef(new Set<string>()), alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -73,25 +73,24 @@ export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: 
   const ready = captures.flatMap((c) => { const l = loaded[c.id]; return l?.key === loadKey(c) && l.detail ? [{ capture: c, detail: l.detail }] : []; });
   const unavailable = captures.filter((c) => { const l = loaded[c.id]; return l?.key === loadKey(c) && l.failed; });
   const loading = captures.length - processing - ready.length - unavailable.length;
-  const ocrFailed = captures.filter((c) => c.status === "error").length;
   const pendingTotal = pendingJobs + processing + loading;
   const entries = groupExtractedChats(ready);
   const retry = () => setLoaded((prev) => Object.fromEntries(Object.entries(prev).filter(([, l]) => !l.failed)));
   function cleanIncompleteChats() {
     const visibleObservations = entries.reduce((count, entry) => count + (entry.kind === "number" ? entry.occurrences.length : 1), 0);
     const incomplete = ready.reduce((count, source) => count + source.detail.rows.length, 0) - visibleObservations;
+    setCleanupExcluded(incomplete);
     setCleanupMessage(incomplete > 0 ? `${incomplete} incomplete observation${incomplete === 1 ? "" : "s"} excluded. Original OCR evidence preserved.` : "No incomplete observations found. Your chat list is already clean.");
   }
   const t = THEMES[theme];
   return <section aria-labelledby="all-extracted-chats-title" className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="min-w-0"><h2 id="all-extracted-chats-title" className="text-lg font-semibold">All Extracted Chats</h2>{!capturing && <p className="text-xs text-muted-foreground">{plural(entries.length, "chat")} from {plural(ready.length, "screenshot")} · unverified OCR observations</p>}</div>
+      <div className="min-w-0"><h2 id="all-extracted-chats-title" className="text-lg font-semibold">All Extracted Chats <span className="align-middle text-sm font-normal text-muted-foreground">({entries.length})</span></h2>{!capturing && <p className="text-xs text-muted-foreground">{plural(ready.length, "screenshot")}{cleanupExcluded !== null && ` · ${cleanupExcluded} incomplete observation${cleanupExcluded === 1 ? "" : "s"} excluded`}</p>}</div>
       <div className="flex shrink-0 items-center gap-2"><div role="group" aria-label="Chat list theme" className="inline-flex rounded-full border bg-muted p-0.5 text-xs">{(["light", "dark"] as const).map((value) => <button key={value} type="button" aria-pressed={theme === value} onClick={() => setTheme(value)} className={`rounded-full px-3 py-1 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${theme === value ? "bg-[#00a884] text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{value === "light" ? "Light Mode" : "Dark Mode"}</button>)}</div><Button size="sm" variant="outline" disabled={!ready.length} onClick={cleanIncompleteChats}>Clean Incomplete Chats</Button></div>
     </div>
-    {cleanupMessage && <p role="status" className="text-xs text-muted-foreground">{cleanupMessage}</p>}
     {capturing ? <p role="status" className="rounded-lg border border-dashed bg-card p-4 text-sm text-muted-foreground">Awaiting Stop — the combined chat list appears after you stop Auto Sync. Screenshots keep appearing above while capturing.</p> : <>
-      {pendingTotal > 0 ? <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"><span aria-hidden="true" className="mr-1.5 inline-block size-2 animate-pulse rounded-full bg-amber-500" />OCR still pending for {plural(pendingTotal, "screenshot")}. This list is not complete yet and refreshes automatically.</p>
-        : captures.length > 0 && unavailable.length === 0 && <p role="status" className="text-xs text-muted-foreground">Includes every screenshot shown above{ocrFailed ? ` · ${plural(ocrFailed, "screenshot")} had no OCR reading` : ""}.</p>}
+      {pendingTotal > 0 ? <p role="status" className="inline-flex w-fit max-w-full items-start rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"><span aria-hidden="true" className="mr-1.5 mt-1 inline-block size-2 shrink-0 animate-pulse rounded-full bg-amber-500" /> <span className="min-w-0 break-words">OCR still pending for {plural(pendingTotal, "screenshot")}. This list is not complete yet and refreshes automatically.</span></p>
+        : null}
       {unavailable.length > 0 && <p role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">Could not load extracted data for {plural(unavailable.length, "screenshot")}; this list is incomplete.<Button size="sm" variant="outline" onClick={retry}>Retry</Button></p>}
       {captures.length >= LIST_LIMIT && <p className="text-xs text-muted-foreground">Only the {LIST_LIMIT} most recent screenshots are listed by the server; older captures are not included.</p>}
       <div data-testid="chat-panel" data-theme={theme} className={`flex min-w-0 flex-col overflow-hidden rounded-lg border shadow-sm ${t.panel}`}>
