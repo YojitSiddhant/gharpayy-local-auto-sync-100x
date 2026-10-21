@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { clearMessage, clearMessageAll, getEvidence, saveFieldVerification, type ClearMessageBatchResult, type ClearMessageResult, type EvidenceDetail, type EvidenceSummary } from "@/src/lib/local-evidence";
+import { clearMessageAll, getEvidence, saveFieldVerification, type ClearMessageBatchResult, type ClearMessageResult, type EvidenceDetail, type EvidenceSummary } from "@/src/lib/local-evidence";
 import { Button } from "@/src/components/ui/button";
 import { Sparkles } from "@/src/components/ui/icons";
 
@@ -74,7 +74,7 @@ export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: 
   async function runClearMessage() {
     if (!ready.length || clearBusy) return;
     setClearBusy(true); setClearError("");
-    try { setClearBatch(await clearMessageAll("Local operator")); }
+    try { const result = await clearMessageAll("Local operator"); setClearBatch(result); if (result.messages_updated > 0) setLoaded({}); }
     catch (error) { setClearError(error instanceof Error ? error.message : "Clear Message failed."); }
     finally { setClearBusy(false); }
   }
@@ -87,7 +87,7 @@ export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: 
       <div className="flex shrink-0 items-center gap-2"><div role="group" aria-label="Chat list theme" className="inline-flex rounded-full border bg-muted p-0.5 text-xs">{(["light", "dark"] as const).map((value) => <button key={value} type="button" aria-pressed={theme === value} onClick={() => setTheme(value)} className={`rounded-full px-3 py-1 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${theme === value ? "bg-[#00a884] text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{value === "light" ? "Light Mode" : "Dark Mode"}</button>)}</div><Button size="sm" variant="outline" disabled={clearBusy || !ready.length} onClick={() => void runClearMessage()}><Sparkles className="size-3.5" />{clearBusy ? "Cleaning…" : "Clear Message"}</Button></div>
     </div>
     {clearError && <p role="alert" className="text-xs text-destructive">{clearError}</p>}
-    {clearBatch && <ClearPopup result={clearBatch} onClose={() => setClearBatch(null)} onReview={async (captureId) => { setClearBatch(null); setClearResult(await clearMessage(captureId, "Local operator")); }} />}
+    {clearBatch && <ClearPopup result={clearBatch} onClose={() => setClearBatch(null)} />}
     {clearResult && <ClearReview result={clearResult} onOpen={onOpen} onClose={() => setClearResult(null)} onApproved={(detail) => setLoaded((current) => current[clearResult.capture_id] ? { ...current, [clearResult.capture_id]: { ...current[clearResult.capture_id], detail } } : current)} />}
     {capturing ? <p role="status" className="rounded-lg border border-dashed bg-card p-4 text-sm text-muted-foreground">Awaiting Stop — the combined chat list appears after you stop Auto Sync. Screenshots keep appearing above while capturing.</p> : <>
       {pendingTotal > 0 ? <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"><span aria-hidden="true" className="mr-1.5 inline-block size-2 animate-pulse rounded-full bg-amber-500" />OCR still pending for {plural(pendingTotal, "screenshot")}. This list is not complete yet and refreshes automatically.</p>
@@ -105,16 +105,11 @@ export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: 
   </section>;
 }
 
-function ClearPopup({ result, onClose, onReview }: { result: ClearMessageBatchResult; onClose: () => void; onReview: (captureId: string) => void }) {
-  const failed = result.batches_failed === result.batches_total && result.batches_total > 0;
-  const partial = result.batches_failed > 0 && !failed;
-  const changed = result.messages_cleaned > 0 || result.phones_formatted > 0;
+function ClearPopup({ result, onClose }: { result: ClearMessageBatchResult; onClose: () => void }) {
+  const changed = result.messages_updated > 0;
   return <div className="fixed right-4 top-4 z-[70] w-[min(92vw,24rem)] rounded-lg border bg-card p-4 shadow-xl" role="status">
-    <div className="flex items-start justify-between gap-3"><strong>{result.rate_limited ? "Clear Message rate limited" : failed ? "Clear Message failed" : partial ? "Clear Message partially completed" : changed ? "Captured messages cleaned" : "No safe changes found."}</strong><Button size="sm" variant="outline" onClick={onClose}>Close</Button></div>
-    <p className="mt-2 text-xs text-muted-foreground">Rows analyzed: {result.rows_analyzed} · Batches: {result.batches_successful}/{result.batches_total} successful</p>
-    <ul className="mt-2 text-xs"><li>Messages cleaned: {result.messages_cleaned}</li><li>Phone numbers formatted: {result.phones_formatted}</li><li>Items still needing review: {result.review_count}</li>{result.review_unavailable_count > 0 && <li>Batch failures: {result.review_unavailable_count}</li>}</ul>
-    {result.failures.length > 0 && <div className="mt-2 space-y-1 text-xs text-destructive"><p>Provider failures:</p>{result.failures.map((failure) => <p key={`batch:${failure.batch}`}>Batch {failure.batch}: {failure.category ?? "provider_error"}{failure.status_code ? ` (${failure.status_code})` : ""} · {failure.phase}</p>)}</div>}
-    {result.review_items.length > 0 && <Button className="mt-3" size="sm" variant="outline" onClick={() => onReview(result.review_items[0].capture_id)}>Review ambiguous item</Button>}
+    <div className="flex items-start justify-between gap-3"><strong>{changed ? "WhatsApp Business labels cleaned" : "No labels safely identified"}</strong><Button size="sm" variant="outline" onClick={onClose}>Close</Button></div>
+    <ul className="mt-2 text-xs"><li>Rows inspected: {result.rows_inspected}</li><li>Labels removed: {result.labels_removed}</li><li>Messages updated: {result.messages_updated}</li><li>Rows unchanged: {result.rows_unchanged}</li><li>Rows requiring manual review: {result.rows_manual_review}</li></ul>
   </div>;
 }
 
@@ -154,7 +149,7 @@ function SourceLink({ capture, t, onOpen }: { capture: OrderedCapture; t: Tokens
   return <button type="button" onClick={() => onOpen(capture.id)} className={`text-[11px] ${t.link}`} aria-label={`Open screenshot #${capture.order} details`} title={stamp(capture)}>Screenshot #{capture.order}</button>;
 }
 function Verification({ capture, t }: { capture: OrderedCapture; t: Tokens }) {
-  return capture.status === "reviewed" ? <span className={`rounded-full px-1.5 py-0.5 text-[11px] ${t.ok}`}>Screenshot reviewed</span> : <span className={`rounded-full px-1.5 py-0.5 text-[11px] ${t.chip}`}>Unverified OCR</span>;
+  return capture.status === "reviewed" ? <span className={`rounded-full px-1.5 py-0.5 text-[11px] ${t.ok}`}>Screenshot reviewed</span> : null;
 }
 function ReviewNote({ row, t }: { row: Row; t: Tokens }) {
   if (!needsCheck(row)) return null;
@@ -165,7 +160,8 @@ function Time({ row, t }: { row: Row; t: Tokens }) {
 }
 function Preview({ row, t }: { row: Row; t: Tokens }) {
   const message = approvedValue(row, "message") ?? row.message_preview;
-  return <span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>;
+  const labels = row.business_labels ?? [];
+  return <><span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>{labels.length > 0 && <span className="mt-1 flex flex-wrap gap-1">{labels.map((label) => <span key={label} className={`rounded-full px-1.5 py-0.5 text-[10px] ${t.chip}`}>{label}</span>)}</span>}</>;
 }
 /** Source, verification and review state for one observation, kept on a quiet third line. */
 function Meta({ occurrence: { capture, row }, t, onOpen }: { occurrence: Occurrence; t: Tokens; onOpen: (id: string) => void }) {

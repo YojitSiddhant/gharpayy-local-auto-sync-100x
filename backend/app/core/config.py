@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ocr_min_image_side: int = 32
     ocr_tesseract_timeout_seconds: float = 20.0
     ocr_tesseract_psm: int = 11
+    ocr_engine: Literal["tesseract", "paddle", "paddle_fallback"] = "tesseract"
+    paddleocr_model_name: str | None = None
+    paddleocr_python_path: str | None = None
+    paddleocr_timeout_seconds: float = 20.0
     # Reference-inspired field cleanup. OFF preserves the legacy parser; SHADOW
     # computes the candidate without changing persisted OCR; ON uses it only for
     # structurally recognized timestamp fields.
@@ -36,7 +40,7 @@ class Settings(BaseSettings):
     ocr_external_transmission_enabled: bool = False
     gemini_api_key: str = ""
     groq_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
     groq_vision_model: str = "qwen/qwen3.8-27b"
     ocr_cloud_request_budget: int = 2
     ocr_cloud_timeout_seconds: float = 15.0

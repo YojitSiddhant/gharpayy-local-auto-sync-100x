@@ -19,7 +19,6 @@ from backend.app.core.security import require_local_api_access
 from backend.app.db.session import get_db
 from backend.app.models.ocr import EvidenceAuditEvent, OcrFieldVerification, OcrFieldVerificationAudit
 from backend.app.ocr import evidence as ev
-from backend.app.ocr.cloud import groq_text_cleanup
 from backend.app.ocr.concurrency import run_ocr_bounded
 from backend.app.ocr.image_validation import validate_image
 from backend.app.ocr.service import EngineFactory, recover_stale_processing, run_ocr_attempt
@@ -109,6 +108,80 @@ def _safe_message_cleanup(original: str | None, suggested: object, uncertain: bo
     return None
 
 
+def _business_label_cleanup(row) -> tuple[str | None, bool]:
+    """Remove only a geometry-proven suffix made of separate badge lines."""
+    original = (row.message_preview or "").strip()
+    lines = list(row.source_lines or [])
+    if not original or len(lines) < 2:
+        return None, False
+    lines.sort(key=lambda item: (item.get("bounds", {}).get("top", 0), item.get("bounds", {}).get("left", 0)))
+    def badge_text(item) -> str:
+        text = str(item.get("text") or "").strip()
+        return text if text and re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) and not any(ch.isdigit() for ch in text) and len(text.split()) <= 5 else ""
+
+    candidates: list[tuple[str, dict]] = []
+    for index in range(len(lines) - 1, -1, -1):
+        item = lines[index]
+        text = badge_text(item)
+        if not text:
+            break
+        ib = item.get("bounds") or {}
+        try:
+            below = lines[index - 1].get("bounds") or {} if index > 0 else {}
+            vertical = index == len(lines) - 1 or int(ib["top"]) >= int(below["bottom"]) - 2
+        except (KeyError, TypeError, ValueError):
+            return None, True
+        if not vertical:
+            return None, True
+        candidates.append((text, ib))
+    if not candidates or len(candidates) == len(lines):
+        return None, False
+    base = lines[len(lines) - len(candidates) - 1].get("bounds") or {}
+    try:
+        for _text, bounds in candidates:
+            aligned = abs(int(bounds["left"]) - int(base["left"])) <= 24
+            shorter = (int(bounds["right"]) - int(bounds["left"])) <= max(80, (int(base["right"]) - int(base["left"])) * 0.9)
+            if not (aligned and shorter):
+                return None, True
+    except (KeyError, TypeError, ValueError):
+        return None, True
+    suffix = " ".join(text for text, _bounds in reversed(candidates))
+    match = re.search(r"(?:^|\s)" + re.escape(suffix) + r"\s*$", original)
+    if not match:
+        return None, True
+    cleaned = original[:match.start()].rstrip(" \t-–—|•")
+    return (cleaned or None), False
+
+
+def _clear_business_labels(db: Session, captures: list, reviewer: str) -> dict:
+    inspected = updated = unchanged = manual = 0
+    for capture in captures:
+        if capture.status != "completed" or capture.trashed_at is not None:
+            continue
+        result = ev.latest_result(capture)
+        for row in (result.rows if result else []):
+            inspected += 1
+            if db.scalar(select(OcrFieldVerification).where(
+                OcrFieldVerification.observation_id == row.id,
+                OcrFieldVerification.field_name == "message",
+                OcrFieldVerification.status == "verified",
+            )):
+                unchanged += 1
+                continue
+            cleaned, uncertain = _business_label_cleanup(row)
+            if cleaned and cleaned != (row.message_preview or ""):
+                if _save_auto_verification(db, row, "message", cleaned, reviewer):
+                    updated += 1
+                else:
+                    unchanged += 1
+            else:
+                unchanged += 1
+                manual += int(uncertain)
+    db.commit()
+    return {"rows_inspected": inspected, "labels_removed": updated, "messages_updated": updated,
+            "rows_unchanged": unchanged, "rows_manual_review": manual}
+
+
 def _save_auto_verification(db: Session, row, field_name: str, value: str, reviewer: str) -> bool:
     label = db.scalar(select(OcrFieldVerification).where(
         OcrFieldVerification.observation_id == row.id,
@@ -187,6 +260,12 @@ def image(capture_id: str, db: Session = Depends(get_db), settings: Settings = D
 
 @router.post("/clear-message-all")
 def clear_message_all(body: ClearMessageBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    captures = ev.list_evidence(db, status_filter="all", limit=ev.LIST_LIMIT)
+    stats = _clear_business_labels(db, captures, body.reviewer.strip()[:120])
+    return _json({"message": "WhatsApp Business label cleanup completed", **stats,
+                  "screenshots_processed": len(captures), "screenshots_updated": sum(1 for c in captures if c.status == "completed"),
+                  "review_items": [], "failures": []})
+    # Legacy provider implementation below is unreachable.
     if not settings.ocr_external_transmission_enabled:
         raise ApiError(403, "EXTERNAL_TRANSMISSION_DISABLED", "External screenshot transmission is disabled.")
     if not settings.groq_api_key:
@@ -274,6 +353,12 @@ def clear_message_all(body: ClearMessageBody, db: Session = Depends(get_db), set
 @router.post("/{capture_id}/clear-message")
 def clear_message(capture_id: str, body: ClearMessageBody, db: Session = Depends(get_db),
                   settings: Settings = Depends(get_settings)):
+    capture = ev.get_capture(db, capture_id)
+    stats = _clear_business_labels(db, [capture], body.reviewer.strip()[:120])
+    return _json({"capture_id": capture.id, "message": "WhatsApp Business label cleanup completed", **stats,
+                  "proposals": [], "diagnostics": {"candidate_count": stats["rows_inspected"], "returned_count": stats["labels_removed"],
+                                                     "unmatched_count": 0, "rejected_count": stats["rows_manual_review"]}})
+    # Legacy provider implementation below is unreachable.
     if not settings.ocr_external_transmission_enabled:
         raise ApiError(403, "EXTERNAL_TRANSMISSION_DISABLED", "External screenshot transmission is disabled.")
     if not settings.groq_api_key:

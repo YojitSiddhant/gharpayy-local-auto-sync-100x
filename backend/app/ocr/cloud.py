@@ -20,6 +20,10 @@ class CloudResult:
     duration_ms: int = 0
     observations: list[dict[str, Any]] | None = None
 
+
+def _gemini_generation_config() -> dict[str, Any]:
+    return {"responseMimeType": "application/json"}
+
 def _json(response: httpx.Response) -> Any:
     try: return response.json()
     except (ValueError, json.JSONDecodeError): return {}
@@ -37,6 +41,8 @@ def _category(payload: Any, status: int | None) -> str:
     text = " ".join(values)
     if status == 429:
         return "quota"
+    if status == 404:
+        return "model_unavailable"
     rules = (
         ("invalid_credentials", ("unauthenticated", "invalid api key", "authentication", "invalid key")),
         ("quota", ("quota", "rate limit", "resource exhausted", "too many requests")),
@@ -101,10 +107,23 @@ def gemini(data: bytes, credential: str, timeout: float, mime_type: str, model: 
     try:
         response = httpx.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             params={"key": credential}, json={"contents": [{"parts": [{"text": _prompt()},
-            {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(data).decode()}}]}]}, timeout=timeout)
+            {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(data).decode()}}]}],
+            "generationConfig": _gemini_generation_config()}, timeout=timeout)
         payload = _json(response)
         if response.status_code >= 400: return _failure("gemini", "request", _category(payload, response.status_code), started, response.status_code)
-        content = "".join(part.get("text", "") for part in payload.get("candidates", [{}])[0].get("content", {}).get("parts", []) if isinstance(part, dict))
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return _failure("gemini", "response", "empty_candidates", started, response.status_code)
+        candidate = candidates[0]
+        if not isinstance(candidate, dict):
+            return _failure("gemini", "response", "invalid_candidate", started, response.status_code)
+        finish = candidate.get("finishReason")
+        if finish in {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}:
+            return _failure("gemini", "response", f"blocked_{str(finish).lower()}", started, response.status_code)
+        parts = candidate.get("content", {}).get("parts", [])
+        content = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+        if not content.strip():
+            return _failure("gemini", "response", "empty_content", started, response.status_code)
         return _parse("gemini", content, started, response.status_code)
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc: return _transport("gemini", exc, started, "response")
 

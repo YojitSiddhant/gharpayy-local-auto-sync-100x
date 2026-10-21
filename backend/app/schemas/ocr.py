@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -49,6 +50,7 @@ class RowObservation(BaseModel):
     sender_direction: Literal["unknown"]
     observed_name: str | None = None
     field_verifications: list[dict[str, Any]] = []
+    business_labels: list[str] = []
 
 
 class EngineInfo(BaseModel):
@@ -104,6 +106,18 @@ class ExtractResponse(BaseModel):
 
 
 def row_out(row: OcrRowObservation) -> RowObservation:
+    verified_message = next((item for item in (row.field_verifications or []) if item.field_name == "message" and item.status == "verified"), None)
+    labels: list[str] = []
+    if not verified_message:
+        lines = list(row.source_lines or [])
+        while len(lines) >= 2:
+            item, previous = lines[-1], lines[-2]
+            text, b, pb = str(item.get("text") or "").strip(), item.get("bounds") or {}, previous.get("bounds") or {}
+            if not re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) or len(text.split()) > 5 or any(ch.isdigit() for ch in text): break
+            try:
+                if int(b["top"]) < int(pb["bottom"]) - 2 or abs(int(b["left"]) - int(pb["left"])) > 24 or (int(b["right"]) - int(b["left"])) > max(80, (int(pb["right"]) - int(pb["left"])) * .9): break
+            except (KeyError, TypeError, ValueError): break
+            labels.insert(0, text); lines.pop()
     return RowObservation(
         position=row.position, display_header_text=row.display_header_text,
         phone=PhoneCandidate(raw=row.phone_candidate_raw, normalized=row.phone_candidate_normalized, status=row.phone_status),
@@ -118,7 +132,7 @@ def row_out(row: OcrRowObservation) -> RowObservation:
                               "verified_value": item.verified_value, "status": item.status,
                               "dataset_split": item.dataset_split, "approved_for_dataset": item.approved_for_dataset,
                               "revision": item.revision, "reviewer": item.reviewer}
-                             for item in (row.field_verifications or [])],
+                             for item in (row.field_verifications or [])], business_labels=labels,
     )
 
 

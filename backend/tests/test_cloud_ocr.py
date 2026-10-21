@@ -27,6 +27,19 @@ def test_gemini_request_and_structured_response(monkeypatch):
     result = cloud.gemini(b"img", "secret", 1, "image/jpeg", "gemini-2.5-flash")
     assert result.status == "completed" and result.observations[0]["uncertain"]
     assert seen["json"]["contents"][0]["parts"][1]["inline_data"]["mime_type"] == "image/jpeg"
+    assert seen["json"]["generationConfig"]["responseMimeType"] == "application/json"
+
+def test_gemini_rejects_empty_and_blocked_candidates(monkeypatch):
+    class Response:
+        status_code = 200
+        def __init__(self, payload): self.payload = payload
+        def json(self): return self.payload
+    for payload, expected in (({"candidates": []}, "empty_candidates"),
+                              ({"candidates": [{"finishReason": "SAFETY"}]}, "blocked_safety"),
+                              ({"candidates": [{"content": {"parts": []}}]}, "empty_content")):
+        monkeypatch.setattr(cloud.httpx, "post", lambda *a, payload=payload, **k: Response(payload))
+        result = cloud.gemini(b"img", "secret", 1, "image/png", "gemini-2.5-flash")
+        assert result.status == "failed" and result.error == expected
 
 def test_groq_request_and_secret_safe_failure(monkeypatch):
     class Response:
@@ -94,6 +107,22 @@ def test_gemini_model_listing_http_error_is_sanitized(monkeypatch):
     monkeypatch.setattr(cloud.httpx, "get", lambda *a, **k: Response())
     result = cloud.gemini_model_status("secret-key", 1, "gemini-2.5-flash")
     assert result.error == "invalid_credentials" and "secret" not in str(result.__dict__)
+
+def test_gemini_404_is_classified_as_model_unavailable(monkeypatch):
+    class Response:
+        status_code = 404
+        def json(self): return {"error": {"message": "model unavailable"}}
+    monkeypatch.setattr(cloud.httpx, "post", lambda *a, **k: Response())
+    result = cloud.gemini(b"img", "secret-key", 1, "image/png", "missing-model")
+    assert result.error == "model_unavailable" and result.status_code == 404
+
+def test_provider_model_retirement_message_is_not_misclassified(monkeypatch):
+    class Response:
+        status_code = 404
+        def json(self): return {"error": {"code": 404, "status": "NOT_FOUND", "message": "model is no longer available to new users"}}
+    monkeypatch.setattr(cloud.httpx, "post", lambda *a, **k: Response())
+    result = cloud.gemini(b"img", "secret-key", 1, "image/png", "gemini-2.5-flash")
+    assert result.error == "model_unavailable" and result.status_code == 404
 
 def test_malformed_output_and_missing_credentials(monkeypatch):
     class Response:
