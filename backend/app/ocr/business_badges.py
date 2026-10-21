@@ -19,8 +19,8 @@ def mark_business_badges(image: Any, rows: list[Any]) -> None:
         import cv2
         import numpy as np
 
-        array = np.asarray(image.convert("RGB"))[:, :, ::-1]
-        hsv = cv2.cvtColor(array, cv2.COLOR_BGR2HSV)
+        array = np.asarray(image.convert("RGB"))
+        hsv = cv2.cvtColor(array, cv2.COLOR_RGB2HSV)
         mask = cv2.inRange(hsv, np.array((0, 55, 35)), np.array((179, 255, 245)))
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -32,7 +32,32 @@ def mark_business_badges(image: Any, rows: list[Any]) -> None:
             if 12 <= width <= 360 and 7 <= height <= 72 and 120 <= area <= 24000:
                 regions.append((x, y, x + width, y + height))
         if not regions:
-            return
+            regions = []
+
+        def neutral_region(bounds: dict[str, Any]) -> tuple[int, int, int, int] | None:
+            """Find a compact dark neutral chip around an OCR line when saturation is absent."""
+            try:
+                left, top = int(bounds["left"]), int(bounds["top"])
+                right, bottom = int(bounds["right"]), int(bounds["bottom"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            width, height = right - left, bottom - top
+            if not (24 <= width <= 360 and 10 <= height <= 48):
+                return None
+            x1, y1 = max(0, left - 14), max(0, top - 14)
+            x2, y2 = min(array.shape[1], right + 14), min(array.shape[0], bottom + 14)
+            crop = array[y1:y2, x1:x2]
+            if crop.size == 0:
+                return None
+            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+            if gray.shape[0] < 8 or gray.shape[1] < 16:
+                return None
+            inner = gray[8:-8, 8:-8]
+            border = np.concatenate((gray[:6].ravel(), gray[-6:].ravel(), gray[:, :6].ravel(), gray[:, -6:].ravel()))
+            inner_median, border_median = float(np.median(inner)), float(np.median(border))
+            if inner_median < 55 and border_median - inner_median >= 2.5:
+                return (x1, y1, x2, y2)
+            return None
         for row in rows:
             for line in row.source_lines:
                 bounds = line.get("bounds") or {}
@@ -44,7 +69,12 @@ def mark_business_badges(image: Any, rows: list[Any]) -> None:
                 line_area = max(1, (right - left) * (bottom - top))
                 matched_groups: list[str] = []
                 matched_colors: list[dict[str, str]] = []
-                for rx1, ry1, rx2, ry2 in sorted(regions, key=lambda region: (region[1], region[0])):
+                line_regions = [region for region in regions if max(0, min(right, region[2]) - max(left, region[0])) * max(0, min(bottom, region[3]) - max(top, region[1])) / line_area >= 0.35]
+                if not line_regions:
+                    neutral = neutral_region(bounds)
+                    if neutral:
+                        line_regions = [neutral]
+                for rx1, ry1, rx2, ry2 in sorted(line_regions, key=lambda region: (region[1], region[0])):
                     overlap = max(0, min(right, rx2) - max(left, rx1)) * max(0, min(bottom, ry2) - max(top, ry1))
                     if overlap / line_area >= 0.35:
                         line["business_label_candidate"] = True

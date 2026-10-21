@@ -46,6 +46,29 @@ def _display_message_without_confirmed_labels(row, original: str | None) -> str 
     return original[:match.start()].rstrip(" \t-–—|•") or None
 
 
+def _normalize_reaction_preview(row, original: str | None) -> str | None:
+    """Project overlapping OCR reaction lines in WhatsApp's visual order."""
+    if not original:
+        return original
+    lines = list(row.source_lines or [])
+    reacted = next((item for item in lines if str(item.get("text") or "").strip().casefold() == "reacted"), None)
+    quoted = next((item for item in lines if str(item.get("text") or "").strip().casefold().startswith("to:")), None)
+    if not reacted or not quoted:
+        return original
+    try:
+        rb, qb = reacted["bounds"], quoted["bounds"]
+        overlap = min(int(rb["bottom"]), int(qb["bottom"])) - max(int(rb["top"]), int(qb["top"]))
+        if overlap <= 0 or int(rb["left"]) >= int(qb["left"]):
+            return original
+    except (KeyError, TypeError, ValueError):
+        return original
+    reacted_text, quoted_text = str(reacted["text"]).strip(), str(quoted["text"]).strip()
+    reversed_text = f"{quoted_text} {reacted_text}"
+    if reversed_text in original:
+        return original.replace(reversed_text, f"{reacted_text} {quoted_text}", 1)
+    return original
+
+
 class Bounds(BaseModel):
     left: int
     top: int
@@ -136,6 +159,7 @@ class ExtractResponse(BaseModel):
 def row_out(row: OcrRowObservation) -> RowObservation:
     verified_message = next((item for item in (row.field_verifications or []) if item.field_name == "message" and item.status == "verified"), None)
     effective_message = verified_message.verified_value if verified_message and verified_message.verified_value is not None else _display_message_without_confirmed_labels(row, row.message_preview)
+    effective_message = _normalize_reaction_preview(row, effective_message)
     labels: list[str] = []
     colors: list[dict[str, str]] = []
     if not verified_message:

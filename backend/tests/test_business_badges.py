@@ -30,6 +30,17 @@ def test_opencv_marks_arbitrary_single_badge_without_name_dictionary():
     assert row.source_lines[0]["business_label_candidate"] is True
 
 
+def test_opencv_preserves_rgb_channel_order_in_color_metadata():
+    cases = [(220, 30, 30), (30, 60, 220), (30, 200, 50), (150, 40, 180)]
+    for rgb in cases:
+        image = badge_image([(140, 100, 250, 132, rgb)])
+        row = row_for([line("LABEL", (150, 108, 238, 125))])
+        mark_business_badges(image, [row])
+        background = row.source_lines[0]["business_label_colors"][0]["background"]
+        channels = tuple(int(background[offset:offset + 2], 16) for offset in (1, 3, 5))
+        assert all(abs(actual - wanted) < 12 for actual, wanted in zip(channels, rgb))
+
+
 def test_opencv_marks_multiple_adjacent_differently_colored_badges():
     image = badge_image([
         (140, 100, 285, 132, (80, 115, 35)),
@@ -56,6 +67,15 @@ def test_colored_unrelated_region_without_ocr_overlap_is_not_marked():
     mark_business_badges(image, [row])
 
     assert "business_label_candidate" not in row.source_lines[0]
+
+
+def test_opencv_marks_low_saturation_dark_badge_from_local_geometry():
+    image = badge_image([(140, 100, 250, 132, (12, 13, 13))])
+    row = row_for([line("GOOD LEAD", (148, 108, 242, 125))])
+
+    mark_business_badges(image, [row])
+
+    assert row.source_lines[0]["business_label_groups"] == ["GOOD LEAD"]
 
 
 def test_merged_line_marks_only_words_overlapping_badge_region():

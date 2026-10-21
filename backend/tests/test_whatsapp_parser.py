@@ -132,3 +132,21 @@ def test_legitimate_single_letter_message_is_preserved():
         )
     )
     assert parse_chat_list(lines, W, H).rows[0].message_preview == "W hello"
+
+
+def test_reaction_preview_is_read_in_visual_order_without_inventing_emoji():
+    lines = [
+        make_line("+91 883 065 6029", 140, 180), make_line("11:12 am", 560, 184),
+        make_line('to: "VISIT SLOT BOOKED"', 408, 228), make_line("Reacted", 140, 229),
+    ]
+    row = parse_chat_list(lines, W, H).rows[0]
+    assert row.message_preview == 'Reacted to: "VISIT SLOT BOOKED"'
+
+
+def test_reaction_text_with_ocr_captured_emoji_is_preserved_as_text():
+    lines = [
+        make_line("+91 883 065 6029", 140, 180), make_line("11:12 am", 560, 184),
+        make_line('Reacted 👍', 140, 229), make_line('to: "VISIT SLOT BOOKED"', 408, 228),
+    ]
+    row = parse_chat_list(lines, W, H).rows[0]
+    assert row.message_preview == 'Reacted 👍 to: "VISIT SLOT BOOKED"'
