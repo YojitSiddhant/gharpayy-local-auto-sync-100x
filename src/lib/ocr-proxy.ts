@@ -1,7 +1,7 @@
 // Used only by the server route handlers. Holds no secrets; LOCAL_API_TOKEN is read in the routes themselves.
 import { ALLOWED_IMAGE_TYPES, CLIENT_HEADER, CLIENT_HEADER_VALUE, MAX_UPLOAD_BYTES } from "@/src/lib/ocr-api";
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+const configuredHosts = () => new Set((process.env.NEXT_ALLOWED_HOSTS ?? "localhost,127.0.0.1,[::1],::1").split(",").map((host) => hostnameOf(host.trim())).filter((host): host is string => host !== null));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals", "field-verifications", "clear-message"]);
 const QUERY_PARAMS = ["search", "status", "include_trash", "zone_id", "user_id", "date_from", "date_to", "page", "page_size"];
@@ -33,7 +33,7 @@ function hostnameOf(host: string): string | null {
 export function checkLocalRequest(headers: Headers, method: string): ProxyRejection | null {
   const host = headers.get("host") ?? "";
   const hostname = hostnameOf(host);
-  if (!hostname || !LOOPBACK_HOSTS.has(hostname)) return { status: 403, code: "HOST_NOT_ALLOWED", message: "This page must be opened on localhost." };
+  if (!hostname || !configuredHosts().has(hostname)) return { status: 403, code: "HOST_NOT_ALLOWED", message: "This page is not served from an allowed host." };
 
   const origin = headers.get("origin");
   const safe = method === "GET" || method === "HEAD";
