@@ -19,6 +19,33 @@ def iso(value: datetime | None) -> str | None:
     return value.replace(tzinfo=timezone.utc).isoformat() if value else None
 
 
+def _display_message_without_confirmed_labels(row, original: str | None) -> str | None:
+    """Project only geometry-confirmed badge suffixes; never infer from casing alone."""
+    if not original:
+        return original
+    marked: list[str] = []
+    for item in reversed(list(row.source_lines or [])):
+        groups = item.get("business_label_groups") or []
+        if groups:
+            marked[0:0] = [str(group).strip() for group in groups if str(group).strip()]
+            continue
+        words = item.get("business_label_words") or []
+        if words:
+            marked[0:0] = [str(word).strip() for word in words if str(word).strip()]
+            continue
+        text = str(item.get("text") or "").strip()
+        if item.get("business_label_candidate") is True and re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) and not any(ch.isdigit() for ch in text) and len(text.split()) <= 5:
+            marked.insert(0, text)
+            continue
+        break
+    if not marked:
+        return original
+    match = re.search(r"(?:^|\s)" + re.escape(" ".join(marked)) + r"\s*$", original, flags=re.IGNORECASE)
+    if not match:
+        return original
+    return original[:match.start()].rstrip(" \t-–—|•") or None
+
+
 class Bounds(BaseModel):
     left: int
     top: int
@@ -51,6 +78,7 @@ class RowObservation(BaseModel):
     observed_name: str | None = None
     field_verifications: list[dict[str, Any]] = []
     business_labels: list[str] = []
+    business_label_colors: list[dict[str, str]] = []
 
 
 class EngineInfo(BaseModel):
@@ -107,21 +135,26 @@ class ExtractResponse(BaseModel):
 
 def row_out(row: OcrRowObservation) -> RowObservation:
     verified_message = next((item for item in (row.field_verifications or []) if item.field_name == "message" and item.status == "verified"), None)
+    effective_message = verified_message.verified_value if verified_message and verified_message.verified_value is not None else _display_message_without_confirmed_labels(row, row.message_preview)
     labels: list[str] = []
+    colors: list[dict[str, str]] = []
     if not verified_message:
         lines = list(row.source_lines or [])
+        for item in lines:
+            labels.extend(str(group).strip() for group in (item.get("business_label_groups") or []) if str(group).strip())
+            colors.extend(item.get("business_label_colors") or [])
         while len(lines) >= 2:
             item, previous = lines[-1], lines[-2]
             text, b, pb = str(item.get("text") or "").strip(), item.get("bounds") or {}, previous.get("bounds") or {}
-            if not re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) or len(text.split()) > 5 or any(ch.isdigit() for ch in text): break
+            if item.get("business_label_candidate") is not True or not re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) or len(text.split()) > 5 or any(ch.isdigit() for ch in text): break
             try:
                 if int(b["top"]) < int(pb["bottom"]) - 2 or abs(int(b["left"]) - int(pb["left"])) > 24 or (int(b["right"]) - int(b["left"])) > max(80, (int(pb["right"]) - int(pb["left"])) * .9): break
             except (KeyError, TypeError, ValueError): break
-            labels.insert(0, text); lines.pop()
+            labels.insert(0, text); colors.insert(0, (item.get("business_label_colors") or [{}])[-1]); lines.pop()
     return RowObservation(
         position=row.position, display_header_text=row.display_header_text,
         phone=PhoneCandidate(raw=row.phone_candidate_raw, normalized=row.phone_candidate_normalized, status=row.phone_status),
-        message_preview=row.message_preview, preview_truncated=row.preview_truncated,
+        message_preview=effective_message, preview_truncated=row.preview_truncated,
         visible_timestamp_text=row.visible_timestamp_text, timestamp_kind=row.timestamp_kind,
         row_bounds=Bounds(left=row.row_left, top=row.row_top, right=row.row_right, bottom=row.row_bottom),
         header_bounds=Bounds(**row.header_bounds) if row.header_bounds else None,
@@ -133,6 +166,7 @@ def row_out(row: OcrRowObservation) -> RowObservation:
                               "dataset_split": item.dataset_split, "approved_for_dataset": item.approved_for_dataset,
                               "revision": item.revision, "reviewer": item.reviewer}
                              for item in (row.field_verifications or [])], business_labels=labels,
+        business_label_colors=colors[:len(labels)],
     )
 
 

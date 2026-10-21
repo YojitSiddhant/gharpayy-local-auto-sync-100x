@@ -112,12 +112,12 @@ def _business_label_cleanup(row) -> tuple[str | None, bool]:
     """Remove only a geometry-proven suffix made of separate badge lines."""
     original = (row.message_preview or "").strip()
     lines = list(row.source_lines or [])
-    if not original or len(lines) < 2:
+    if not original or (len(lines) < 2 and not any(item.get("business_label_words") for item in lines)):
         return None, False
     lines.sort(key=lambda item: (item.get("bounds", {}).get("top", 0), item.get("bounds", {}).get("left", 0)))
     def badge_text(item) -> str:
         text = str(item.get("text") or "").strip()
-        return text if text and re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) and not any(ch.isdigit() for ch in text) and len(text.split()) <= 5 else ""
+        return text if item.get("business_label_candidate") is True and text and re.fullmatch(r"[A-Z][A-Z0-9 ]{1,39}", text) and not any(ch.isdigit() for ch in text) and len(text.split()) <= 5 else ""
 
     candidates: list[tuple[str, dict]] = []
     for index in range(len(lines) - 1, -1, -1):
@@ -135,7 +135,23 @@ def _business_label_cleanup(row) -> tuple[str | None, bool]:
             return None, True
         candidates.append((text, ib))
     if not candidates or len(candidates) == len(lines):
-        return None, False
+        # A merged OCR line can contain message words followed by badge words.
+        # Only remove a suffix when word-level boxes independently overlap a
+        # detected badge region; uppercase text alone is never sufficient.
+        marked: list[str] = []
+        for item in reversed(lines):
+            words = item.get("business_label_words") or []
+            if not words:
+                break
+            marked[0:0] = [str(word).strip() for word in words if str(word).strip()]
+        if not marked or not original:
+            return None, False
+        suffix = " ".join(marked)
+        match = re.search(r"(?:^|\s)" + re.escape(suffix) + r"\s*$", original, flags=re.IGNORECASE)
+        if not match:
+            return None, True
+        cleaned = original[:match.start()].rstrip(" \t-–—|•")
+        return (cleaned or None), False
     base = lines[len(lines) - len(candidates) - 1].get("bounds") or {}
     try:
         for _text, bounds in candidates:
