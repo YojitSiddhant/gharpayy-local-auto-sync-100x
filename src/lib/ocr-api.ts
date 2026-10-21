@@ -26,6 +26,7 @@ export const rowSchema = z.object({
   review_status: z.literal("needs_review"),
   sender_direction: z.literal("unknown"),
   observed_name: z.string().nullable().optional(),
+  business_labels: z.array(z.string()).optional(),
 });
 
 export const extractResponseSchema = z.object({

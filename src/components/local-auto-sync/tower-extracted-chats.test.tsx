@@ -93,7 +93,7 @@ describe("AllExtractedChats", () => {
     expect(within(observations[1]).getByText("No time")).toBeInTheDocument();
     expect(within(list).getByText("Number needs review")).toBeInTheDocument();
     expect(within(list).getByText(/OCR header: “\+91 9876O 43210”/)).toBeInTheDocument();
-    expect(within(list).getAllByText("Unverified OCR")).toHaveLength(3);
+    expect(within(list).queryByText("Unverified OCR")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Includes every screenshot shown above");
     fireEvent.click(within(observations[1]).getByRole("button", { name: "Open screenshot #2 details" }));
     expect(onOpen).toHaveBeenCalledWith("s2");

@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +18,7 @@ from backend.app.core.errors import ApiError
 from backend.app.models.auth import CaptureSession, User
 from backend.app.models.ocr import OcrResult, OcrRowObservation, ScreenshotCapture, utcnow
 from backend.app.ocr.engine import OcrError, OcrTimeoutError, OcrUnavailableError, TesseractEngine
+from backend.app.ocr.paddle_engine import PaddleOCREngine, PaddleUnavailableError
 from backend.app.ocr.image_validation import ValidatedImage, decode_rgb
 from backend.app.ocr.storage import store_evidence
 from backend.app.ocr.whatsapp_parser import PARSER_VERSION, parse_chat_list
@@ -25,12 +27,13 @@ from backend.app.ocr.duplicate_detection import eligible_phone, phone_fingerprin
 from backend.app.ml.shadow import run_shadow_prediction
 from backend.app.ocr.cloud import effective_cloud_selection, run_cloud
 
-EngineFactory = Callable[[Settings], TesseractEngine]
+EngineFactory = Callable[[Settings], object]
 
-_OCR_ERROR_STATUS = {OcrTimeoutError: 504, OcrUnavailableError: 503}
+_OCR_ERROR_STATUS = {OcrTimeoutError: 504, OcrUnavailableError: 503, PaddleUnavailableError: 503}
 _OCR_ERROR_MESSAGE = {
     "OCR_TIMEOUT": "OCR exceeded the processing time limit.",
     "OCR_ENGINE_UNAVAILABLE": "Local English Tesseract OCR is not available.",
+    "PADDLEOCR_UNAVAILABLE": "Optional PaddleOCR is not available in this environment.",
     "OCR_FAILED": "OCR could not process this screenshot.",
     "OCR_INTERRUPTED": "OCR was interrupted before completing (for example by a server restart). Use Retry OCR.",
 }
@@ -47,7 +50,15 @@ class CaptureMeta:
     crop: dict[str, int] | None = None
 
 
-def default_engine(settings: Settings) -> TesseractEngine:
+@lru_cache(maxsize=2)
+def _paddle_engine(timeout: float, model: str | None, python_path: str | None, max_bytes: int) -> PaddleOCREngine:
+    return PaddleOCREngine(timeout, model, python_path, max_bytes)
+
+
+def default_engine(settings: Settings) -> object:
+    if settings.ocr_engine in ("paddle", "paddle_fallback"):
+        return _paddle_engine(settings.paddleocr_timeout_seconds, settings.paddleocr_model_name,
+                              settings.paddleocr_python_path, settings.ocr_max_upload_bytes)
     return TesseractEngine(settings.ocr_tesseract_timeout_seconds, settings.ocr_tesseract_psm)
 
 
@@ -156,7 +167,13 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     attempt = len(capture.results) + 1
     result = OcrResult(capture_id=capture.id, attempt=attempt, tesseract_psm=settings.ocr_tesseract_psm, started_at=utcnow())
     try:
-        output = engine_factory(settings).run(decode_rgb(image.data))
+        engine = engine_factory(settings)
+        try:
+            output = engine.run(decode_rgb(image.data))
+        except PaddleUnavailableError:
+            if settings.ocr_engine != "paddle_fallback":
+                raise
+            output = TesseractEngine(settings.ocr_tesseract_timeout_seconds, settings.ocr_tesseract_psm).run(decode_rgb(image.data))
         parsed = parse_chat_list(output.lines, image.width, image.height, field_cleanup=settings.layout_ocr_mode == "on")
         cloud_results = []
         mode, providers = effective_cloud_selection(settings)
@@ -185,6 +202,7 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
             pass
 
     result.status = "completed"
+    result.engine_name = getattr(engine, "ENGINE_NAME", "tesseract")
     result.engine_version = output.engine_version
     result.ocr_language = output.language
     result.preprocessing = output.preprocessing

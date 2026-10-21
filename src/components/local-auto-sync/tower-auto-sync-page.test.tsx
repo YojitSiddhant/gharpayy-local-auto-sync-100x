@@ -186,6 +186,8 @@ describe("TowerAutoSyncPage capture strip and extracted chats", () => {
     expect(await screen.findByText("Message from cap-1")).toBeInTheDocument();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /Start Auto Sync/ })));
     expect(await screen.findByRole("status")).toHaveTextContent(/Awaiting Stop/);
+    expect(screen.getByRole("region", { name: "Live capture monitor" })).toBeInTheDocument();
+    expect(screen.getByText("Monitoring")).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "All extracted chats" })).not.toBeInTheDocument();
     expect(cards()).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
