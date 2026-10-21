@@ -159,11 +159,33 @@ function ReviewNote({ row, t }: { row: Row; t: Tokens }) {
 function Time({ row, t }: { row: Row; t: Tokens }) {
   return row.visible_timestamp_text ? <time className={`shrink-0 text-xs ${t.muted}`}>{row.visible_timestamp_text}</time> : <span className={`shrink-0 text-xs italic ${t.faint}`}>No time</span>;
 }
+
+type LabelColor = { background: string; foreground: string };
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const hexRgb = (value: string) => {
+  const match = /^#?([\da-f]{6})$/i.exec(value.trim());
+  if (!match) return null;
+  return [0, 2, 4].map((offset) => Number.parseInt(match[1].slice(offset, offset + 2), 16) / 255) as [number, number, number];
+};
+const rgbHex = (rgb: [number, number, number]) => `#${rgb.map((value) => Math.round(clamp(value, 0, 1) * 255).toString(16).padStart(2, "0")).join("")}`;
+const luminance = (rgb: [number, number, number]) => rgb.reduce((sum, value, index) => sum + (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][index], 0);
+export const labelContrast = (foreground: string, background: string) => { const fg = hexRgb(foreground), bg = hexRgb(background); if (!fg || !bg) return 1; const [light, dark] = [luminance(fg), luminance(bg)].sort((a, b) => b - a); return (light + 0.05) / (dark + 0.05); };
+const rgbHsl = (rgb: [number, number, number]) => { const [r, g, b] = rgb, max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2; if (!d) return [0, 0, l] as [number, number, number]; const s = d / (1 - Math.abs(2 * l - 1)); const h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) / 6 : max === g ? ((b - r) / d + 2) / 6 : ((r - g) / d + 4) / 6; return [h, s, l] as [number, number, number]; };
+const hslRgb = ([h, s, l]: [number, number, number]) => { const f = (n: number) => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1))); }; return [f(0), f(8), f(4)] as [number, number, number]; };
+export function presentLabelColor(input: Partial<LabelColor> | undefined, theme: Theme): LabelColor {
+  const source = input?.background && hexRgb(input.background) ? input.background : theme === "light" ? "#e9edef" : "#26343b";
+  const [h, s, sourceLightness] = rgbHsl(hexRgb(source)!);
+  const targetLightness = theme === "light" ? clamp(sourceLightness, 0.62, 0.82) : clamp(sourceLightness, 0.28, 0.52);
+  const background = rgbHex(hslRgb([h, clamp(s, 0.35, 0.82), targetLightness]));
+  const candidates = ["#111b21", "#ffffff"];
+  const foreground = candidates.sort((a, b) => labelContrast(b, background) - labelContrast(a, background))[0];
+  return { background, foreground };
+}
 function Preview({ row, t }: { row: Row; t: Tokens }) {
   const message = approvedValue(row, "message") ?? row.message_preview;
   const labels = row.business_labels ?? [];
   const colors = row.business_label_colors ?? [];
-  return <><span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>{labels.length > 0 && <span className="mt-1 flex flex-wrap gap-1">{labels.map((label, index) => { const candidate = colors[index]; const color = candidate?.background && candidate.foreground ? candidate : undefined; return <span key={`${label}:${index}`} className={`rounded-full px-1.5 py-0.5 text-[10px] ${color ? "" : t.chip}`} style={color ? { backgroundColor: color.background, color: color.foreground } : undefined}>{label}</span>; })}</span>}</>;
+  return <><span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>{labels.length > 0 && <span className="mt-1 flex flex-wrap gap-1">{labels.map((label, index) => { const color = presentLabelColor(colors[index], t === THEMES.light ? "light" : "dark"); return <span key={`${label}:${index}`} className="rounded-full border px-1.5 py-0.5 text-[10px]" style={{ backgroundColor: color.background, borderColor: color.background, color: color.foreground }}>{label}</span>; })}</span>}</>;
 }
 /** Source, verification and review state for one observation, kept on a quiet third line. */
 function Meta({ occurrence: { capture, row }, t, onOpen }: { occurrence: Occurrence; t: Tokens; onOpen: (id: string) => void }) {

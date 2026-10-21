@@ -5,7 +5,7 @@ import { detail as baseDetail, sampleRows, summary } from "@/src/test-fixtures/o
 
 const getEvidence = vi.fn<(id: string) => Promise<EvidenceDetail>>();
 vi.mock("@/src/lib/local-evidence", () => ({ getEvidence: (id: string) => getEvidence(id) }));
-const { AllExtractedChats, groupExtractedChats, orderCaptures } = await import("@/src/components/local-auto-sync/tower-extracted-chats");
+const { AllExtractedChats, groupExtractedChats, orderCaptures, labelContrast, presentLabelColor } = await import("@/src/components/local-auto-sync/tower-extracted-chats");
 
 type Row = EvidenceDetail["rows"][number];
 const good = sampleRows[0], ambiguous = sampleRows[1];
@@ -18,6 +18,29 @@ describe("orderCaptures", () => {
   it("orders oldest first with stable id tie-breaks and missing times last", () => {
     const out = orderCaptures([cap("c", "2026-10-20T10:02:00Z"), cap("z", null), cap("b", "2026-10-20T10:00:00Z"), cap("a", "2026-10-20T10:00:00Z")]);
     expect(out.map((c) => [c.id, c.order])).toEqual([["a", 1], ["b", 2], ["c", 3], ["z", 4]]);
+  });
+});
+
+describe("business label presentation colors", () => {
+  it("normalizes bright and dark colors with readable contrast in both themes", () => {
+    for (const source of ["#ffffff", "#000000", "#e11d48", "#6b7280"]) {
+      for (const theme of ["light", "dark"] as const) {
+        const color = presentLabelColor({ background: source, foreground: "#ffffff" }, theme);
+        expect(labelContrast(color.foreground, color.background)).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it("uses neutral theme-specific fallback colors for missing metadata", () => {
+    const light = presentLabelColor(undefined, "light");
+    const dark = presentLabelColor({}, "dark");
+    expect(light.background).not.toBe(dark.background);
+    expect(labelContrast(light.foreground, light.background)).toBeGreaterThanOrEqual(4.5);
+    expect(labelContrast(dark.foreground, dark.background)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("preserves distinct color families without using label names", () => {
+    expect(presentLabelColor({ background: "#e11d48" }, "dark").background).not.toBe(presentLabelColor({ background: "#2563eb" }, "dark").background);
   });
 });
 

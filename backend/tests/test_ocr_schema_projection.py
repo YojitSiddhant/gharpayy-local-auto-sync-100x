@@ -76,3 +76,40 @@ def test_row_projection_returns_all_merged_badge_groups_as_separate_labels():
 
     assert projected.message_preview == "Hi, got a stay?"
     assert projected.business_labels == ["RE-INITIATE", "NOVEMBER", "CRM", "TANIA"]
+
+
+def test_same_name_badges_with_distinct_geometry_remain_separate():
+    row = make_row(message="Message TANIA TANIA")
+    row.source_lines = [
+        {"text": "Message", "bounds": {"left": 10, "top": 10, "right": 180, "bottom": 30}},
+        {"text": "TANIA", "bounds": {"left": 10, "top": 35, "right": 90, "bottom": 55}, "business_label_candidate": True},
+        {"text": "TANIA", "bounds": {"left": 10, "top": 60, "right": 90, "bottom": 80}, "business_label_candidate": True},
+    ]
+    projected = row_out(row)
+    assert projected.business_labels == ["TANIA", "TANIA"]
+
+
+def test_projection_removes_good_lead_and_keeps_all_visual_badges_separate():
+    row = make_row(message="S Check if location is feasible for you ? IMMEDIATE AI HANDOFF GOOD LEAD TANIA")
+    row.source_lines = [
+        {"text": "S Check if location is feasible for you ?", "bounds": {"left": 270, "top": 347, "right": 719, "bottom": 375}},
+        {"text": "IMMEDIATE", "bounds": {"left": 539, "top": 395, "right": 643, "bottom": 415}, "business_label_candidate": True, "business_label_groups": ["IMMEDIATE"]},
+        {"text": "AI HANDOFF", "bounds": {"left": 278, "top": 396, "right": 391, "bottom": 416}, "business_label_candidate": True, "business_label_groups": ["AI HANDOFF"]},
+        {"text": "GOOD LEAD", "bounds": {"left": 415, "top": 397, "right": 517, "bottom": 414}, "business_label_candidate": True, "business_label_groups": ["GOOD LEAD"]},
+        {"text": "TANIA", "bounds": {"left": 666, "top": 397, "right": 725, "bottom": 415}, "business_label_candidate": True, "business_label_groups": ["TANIA"]},
+    ]
+
+    projected = row_out(row)
+
+    assert projected.message_preview == "S Check if location is feasible for you ?"
+    assert projected.business_labels == ["IMMEDIATE", "AI HANDOFF", "GOOD LEAD", "TANIA"]
+    assert row.message_preview.endswith("GOOD LEAD TANIA")
+
+
+def test_api_projection_reorders_real_reaction_preview_without_adding_emoji():
+    row = make_row(message='S to: "VISIT SLOT BOOKED" Reacted')
+    row.source_lines = [
+        {"text": 'to: "VISIT SLOT BOOKED"', "bounds": {"left": 408, "top": 518, "right": 912, "bottom": 546}},
+        {"text": "Reacted", "bounds": {"left": 269, "top": 519, "right": 365, "bottom": 544}},
+    ]
+    assert row_out(row).message_preview == 'S Reacted to: "VISIT SLOT BOOKED"'

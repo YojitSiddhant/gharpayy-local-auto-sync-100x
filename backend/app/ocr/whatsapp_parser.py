@@ -310,6 +310,16 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int, *, field_cle
              and not NAV_WORDS_RE.match(l.text.strip())),
             key=lambda l: (l.top, l.left),
         )
+        # PaddleOCR can place the reaction marker one pixel lower than the quoted
+        # preview.  In WhatsApp's layout, an overlapping "Reacted" line precedes
+        # the adjacent `to: ...` line; restore that visual reading order without
+        # inventing the reaction emoji (which OCR may not recognize).
+        for i in range(1, len(preview_lines)):
+            current, previous = preview_lines[i], preview_lines[i - 1]
+            current_text, previous_text = current.text.strip(), previous.text.strip()
+            vertical_overlap = min(current.bottom, previous.bottom) - max(current.top, previous.top)
+            if current_text.casefold().startswith("reacted") and previous_text.casefold().startswith("to:") and vertical_overlap > 0 and current.left < previous.left:
+                preview_lines[i - 1:i + 1] = [current, previous]
         preview_parts: list[str] = []
         status_glyph_removed = False
         for line in preview_lines:
