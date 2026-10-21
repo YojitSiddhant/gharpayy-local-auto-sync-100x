@@ -1,8 +1,9 @@
 """Local-only access boundary for private OCR endpoints.
 
 CORS is not authentication. Protected endpoints require all of:
-1. a loopback client address (the API is not served to the network),
-2. a loopback Host header (DNS-rebinding guard),
+1. a loopback client address during local development, or an explicitly configured
+   production host/origin and server-only token,
+2. an allowed Host header (DNS-rebinding guard),
 3. no foreign browser Origin (direct cross-site browser calls are refused),
 4. the server-only shared token sent by the Next.js proxy (constant-time compare).
 """
@@ -28,14 +29,15 @@ def _host_name(host_header: str) -> str:
 def require_local_api_access(request: Request, settings: Settings = Depends(get_settings)) -> None:
     test_mode = settings.app_env == "test"
     client = request.client.host if request.client else ""
-    if client not in _LOOPBACK_CLIENTS and not (test_mode and client == "testclient"):
+    remote_allowed = settings.app_env in {"production", "render"}
+    if client not in _LOOPBACK_CLIENTS and not (test_mode and client == "testclient") and not remote_allowed:
         raise ApiError(403, "LOOPBACK_ONLY", "This API only accepts requests from this computer.")
 
     allowed_hosts = {h.strip("[]").lower() for h in settings.backend_allowed_hosts}
     if test_mode:
         allowed_hosts.add("testserver")
     if _host_name(request.headers.get("host", "")) not in allowed_hosts:
-        raise ApiError(403, "HOST_NOT_ALLOWED", "Request host is not a local address.")
+        raise ApiError(403, "HOST_NOT_ALLOWED", "Request host is not allowed.")
 
     origin = request.headers.get("origin")
     if origin is not None and origin not in settings.backend_cors_origins:
