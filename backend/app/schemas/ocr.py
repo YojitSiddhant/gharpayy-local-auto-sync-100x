@@ -48,6 +48,7 @@ class RowObservation(BaseModel):
     review_status: Literal["needs_review"]
     sender_direction: Literal["unknown"]
     observed_name: str | None = None
+    field_verifications: list[dict[str, Any]] = []
 
 
 class EngineInfo(BaseModel):
@@ -113,6 +114,11 @@ def row_out(row: OcrRowObservation) -> RowObservation:
         ocr_confidence=row.ocr_confidence, warnings=list(row.warnings or []), quarantined=row.quarantined,
         identity_status=row.identity_status, review_status=row.review_status, sender_direction=row.sender_direction,
         observed_name=row.observed_name,
+        field_verifications=[{"field_name": item.field_name, "observed_value": item.observed_value,
+                              "verified_value": item.verified_value, "status": item.status,
+                              "dataset_split": item.dataset_split, "approved_for_dataset": item.approved_for_dataset,
+                              "revision": item.revision, "reviewer": item.reviewer}
+                             for item in (row.field_verifications or [])],
     )
 
 

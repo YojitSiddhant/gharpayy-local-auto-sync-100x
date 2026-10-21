@@ -3,7 +3,7 @@ import { ALLOWED_IMAGE_TYPES, CLIENT_HEADER, CLIENT_HEADER_VALUE, MAX_UPLOAD_BYT
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals", "field-verifications"]);
+const ID_ACTIONS = new Set(["review", "trash", "restore", "retry", "proposals", "field-verifications", "clear-message"]);
 const QUERY_PARAMS = ["search", "status", "include_trash", "zone_id", "user_id", "date_from", "date_to", "page", "page_size"];
 export const JSON_BODY_LIMIT = 1024 * 1024;
 export const UPLOAD_METADATA_HEADERS = [
@@ -76,6 +76,7 @@ export function resolveEvidencePath(method: string, segments: string[], search: 
     if (first && UUID.test(first) && second === undefined) path = `evidence/${first}`;
   } else if (method === "POST") {
     if (first === "purge-trash" && second === undefined) path = "evidence/purge-trash";
+    else if (first === "clear-message-all" && second === undefined) path = "evidence/clear-message-all";
     else if (first && UUID.test(first) && second && ID_ACTIONS.has(second)) path = `evidence/${first}/${second}`;
   }
   if (!path) return null;

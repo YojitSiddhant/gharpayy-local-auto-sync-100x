@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { getEvidence, type EvidenceDetail, type EvidenceSummary } from "@/src/lib/local-evidence";
+import { clearMessage, clearMessageAll, getEvidence, saveFieldVerification, type ClearMessageBatchResult, type ClearMessageResult, type EvidenceDetail, type EvidenceSummary } from "@/src/lib/local-evidence";
 import { Button } from "@/src/components/ui/button";
+import { Sparkles } from "@/src/components/ui/icons";
 
 /** Backend list endpoint cap (backend/app/ocr/evidence.py LIST_LIMIT); older captures are not returned. */
 export const LIST_LIMIT = 500;
@@ -14,8 +15,9 @@ export type Occurrence = { capture: OrderedCapture; row: Row };
 export type ChatEntry = { kind: "number"; key: string; phone: string; occurrences: Occurrence[] } | { kind: "unconfirmed"; key: string; occurrence: Occurrence };
 
 export const needsCheck = (row: Row) => row.quarantined || row.warnings.length > 0 || row.phone.status !== "candidate";
+const approvedValue = (row: Row, field: "phone" | "message") => row.field_verifications?.find((item) => item.field_name === field && item.status === "verified")?.verified_value ?? null;
 /** Only the deterministic parser's confident, non-quarantined header reading counts as a contact identity; previews are never read for numbers. */
-export const confirmedPhone = (row: Row) => row.phone.status === "candidate" && !row.quarantined && row.phone.normalized && INDIAN_MOBILE.test(row.phone.normalized) ? row.phone.normalized : null;
+export const confirmedPhone = (row: Row) => { const verified = approvedValue(row, "phone"); if (verified) return verified; return row.phone.status === "candidate" && !row.quarantined && row.phone.normalized && INDIAN_MOBILE.test(row.phone.normalized) ? row.phone.normalized : null; };
 const time = (c: EvidenceSummary) => (c.captured_at ? Date.parse(c.captured_at) : NaN);
 
 /** Oldest first by capture timestamp, ties and missing times broken by stable id. Order numbers start at 1. */
@@ -47,6 +49,7 @@ const stamp = (c: EvidenceSummary) => (c.captured_at ? new Date(c.captured_at).t
 export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: { captures: OrderedCapture[]; capturing: boolean; pendingJobs: number; onOpen: (id: string) => void }) {
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [theme, setTheme] = useState<Theme>("dark");
+  const [clearBusy, setClearBusy] = useState(false), [clearResult, setClearResult] = useState<ClearMessageResult | null>(null), [clearBatch, setClearBatch] = useState<ClearMessageBatchResult | null>(null), [clearError, setClearError] = useState("");
   const inflight = useRef(new Set<string>()), alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
@@ -68,14 +71,24 @@ export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: 
   const pendingTotal = pendingJobs + processing + loading;
   const entries = groupExtractedChats(ready);
   const retry = () => setLoaded((prev) => Object.fromEntries(Object.entries(prev).filter(([, l]) => !l.failed)));
+  async function runClearMessage() {
+    if (!ready.length || clearBusy) return;
+    setClearBusy(true); setClearError("");
+    try { setClearBatch(await clearMessageAll("Local operator")); }
+    catch (error) { setClearError(error instanceof Error ? error.message : "Clear Message failed."); }
+    finally { setClearBusy(false); }
+  }
 
 
   const t = THEMES[theme];
   return <section aria-labelledby="all-extracted-chats-title" className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="min-w-0"><h2 id="all-extracted-chats-title" className="text-lg font-semibold">All Extracted Chats</h2>{!capturing && <p className="text-xs text-muted-foreground">{plural(entries.length, "chat")} from {plural(ready.length, "screenshot")} · unverified OCR observations</p>}</div>
-      <div role="group" aria-label="Chat list theme" className="inline-flex shrink-0 rounded-full border bg-muted p-0.5 text-xs">{(["light", "dark"] as const).map((value) => <button key={value} type="button" aria-pressed={theme === value} onClick={() => setTheme(value)} className={`rounded-full px-3 py-1 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${theme === value ? "bg-[#00a884] text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{value === "light" ? "Light Mode" : "Dark Mode"}</button>)}</div>
+      <div className="flex shrink-0 items-center gap-2"><div role="group" aria-label="Chat list theme" className="inline-flex rounded-full border bg-muted p-0.5 text-xs">{(["light", "dark"] as const).map((value) => <button key={value} type="button" aria-pressed={theme === value} onClick={() => setTheme(value)} className={`rounded-full px-3 py-1 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${theme === value ? "bg-[#00a884] text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{value === "light" ? "Light Mode" : "Dark Mode"}</button>)}</div><Button size="sm" variant="outline" disabled={clearBusy || !ready.length} onClick={() => void runClearMessage()}><Sparkles className="size-3.5" />{clearBusy ? "Cleaning…" : "Clear Message"}</Button></div>
     </div>
+    {clearError && <p role="alert" className="text-xs text-destructive">{clearError}</p>}
+    {clearBatch && <ClearPopup result={clearBatch} onClose={() => setClearBatch(null)} onReview={async (captureId) => { setClearBatch(null); setClearResult(await clearMessage(captureId, "Local operator")); }} />}
+    {clearResult && <ClearReview result={clearResult} onOpen={onOpen} onClose={() => setClearResult(null)} onApproved={(detail) => setLoaded((current) => current[clearResult.capture_id] ? { ...current, [clearResult.capture_id]: { ...current[clearResult.capture_id], detail } } : current)} />}
     {capturing ? <p role="status" className="rounded-lg border border-dashed bg-card p-4 text-sm text-muted-foreground">Awaiting Stop — the combined chat list appears after you stop Auto Sync. Screenshots keep appearing above while capturing.</p> : <>
       {pendingTotal > 0 ? <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"><span aria-hidden="true" className="mr-1.5 inline-block size-2 animate-pulse rounded-full bg-amber-500" />OCR still pending for {plural(pendingTotal, "screenshot")}. This list is not complete yet and refreshes automatically.</p>
         : captures.length > 0 && unavailable.length === 0 && <p role="status" className="text-xs text-muted-foreground">Includes every screenshot shown above{ocrFailed ? ` · ${plural(ocrFailed, "screenshot")} had no OCR reading` : ""}.</p>}
@@ -90,6 +103,42 @@ export function AllExtractedChats({ captures, capturing, pendingJobs, onOpen }: 
       </div>
     </>}
   </section>;
+}
+
+function ClearPopup({ result, onClose, onReview }: { result: ClearMessageBatchResult; onClose: () => void; onReview: (captureId: string) => void }) {
+  const failed = result.batches_failed === result.batches_total && result.batches_total > 0;
+  const partial = result.batches_failed > 0 && !failed;
+  const changed = result.messages_cleaned > 0 || result.phones_formatted > 0;
+  return <div className="fixed right-4 top-4 z-[70] w-[min(92vw,24rem)] rounded-lg border bg-card p-4 shadow-xl" role="status">
+    <div className="flex items-start justify-between gap-3"><strong>{result.rate_limited ? "Clear Message rate limited" : failed ? "Clear Message failed" : partial ? "Clear Message partially completed" : changed ? "Captured messages cleaned" : "No safe changes found."}</strong><Button size="sm" variant="outline" onClick={onClose}>Close</Button></div>
+    <p className="mt-2 text-xs text-muted-foreground">Rows analyzed: {result.rows_analyzed} · Batches: {result.batches_successful}/{result.batches_total} successful</p>
+    <ul className="mt-2 text-xs"><li>Messages cleaned: {result.messages_cleaned}</li><li>Phone numbers formatted: {result.phones_formatted}</li><li>Items still needing review: {result.review_count}</li>{result.review_unavailable_count > 0 && <li>Batch failures: {result.review_unavailable_count}</li>}</ul>
+    {result.failures.length > 0 && <div className="mt-2 space-y-1 text-xs text-destructive"><p>Provider failures:</p>{result.failures.map((failure) => <p key={`batch:${failure.batch}`}>Batch {failure.batch}: {failure.category ?? "provider_error"}{failure.status_code ? ` (${failure.status_code})` : ""} · {failure.phase}</p>)}</div>}
+    {result.review_items.length > 0 && <Button className="mt-3" size="sm" variant="outline" onClick={() => onReview(result.review_items[0].capture_id)}>Review ambiguous item</Button>}
+  </div>;
+}
+
+function ClearReview({ result, onOpen, onClose, onApproved }: { result: ClearMessageResult; onOpen: (id: string) => void; onClose: () => void; onApproved: (detail: EvidenceDetail) => void }) {
+  const [approved, setApproved] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState(false), [error, setError] = useState("");
+  async function approve(proposal: ClearMessageResult["proposals"][number]) {
+    if (saving) return;
+    setSaving(true); setError("");
+    try {
+      const detail = await saveFieldVerification(result.capture_id, { position: proposal.position, field_name: proposal.field_name,
+        status: "verified", verified_value: proposal.suggested_value, dataset_split: "unassigned", approved_for_dataset: false, reviewer: "Local operator" });
+      onApproved(detail);
+      setApproved((current) => ({ ...current, [`${proposal.position}:${proposal.field_name}`]: true }));
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not save approval."); }
+    finally { setSaving(false); }
+  }
+  return <div className="fixed inset-0 z-[60] overflow-y-auto bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="clear-message-title">
+    <div className="mx-auto max-w-2xl rounded-lg border bg-card p-4 shadow-xl"><div className="flex items-center justify-between gap-3"><h2 id="clear-message-title" className="font-semibold">Clear Message review</h2><Button size="sm" variant="outline" onClick={onClose}>Close</Button></div>
+      <p className="mt-1 text-xs text-muted-foreground">Groq suggestions are unverified proposals. Original OCR remains unchanged.</p>
+      {result.proposals.length === 0 ? <p className="py-6 text-sm text-muted-foreground">No safe correction proposals were returned.</p> : <ul className="mt-4 space-y-3">{result.proposals.map((proposal) => { const key = `${proposal.position}:${proposal.field_name}`; return <li key={key} className="rounded-md border p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong>Row {proposal.position} · {proposal.field_name}</strong><Button size="sm" variant="outline" onClick={() => onOpen(result.capture_id)}>View source screenshot</Button></div><p className="mt-2"><span className="text-muted-foreground">Original:</span> {proposal.original_value || "Not captured"}</p><p><span className="text-muted-foreground">Suggested:</span> {proposal.suggested_value}</p><p className="mt-1 text-xs text-amber-700">{proposal.uncertain ? "Uncertain — review carefully before approving." : "Model marked this as clear; human approval is still required."}</p><Button className="mt-2" size="sm" disabled={saving || approved[key]} onClick={() => void approve(proposal)}>{approved[key] ? "Approved" : "Approve correction"}</Button></li>; })}</ul>}
+      {error && <p role="alert" className="mt-3 text-xs text-destructive">{error}</p>}
+    </div>
+  </div>;
 }
 
 type Theme = "light" | "dark";
@@ -115,7 +164,8 @@ function Time({ row, t }: { row: Row; t: Tokens }) {
   return row.visible_timestamp_text ? <time className={`shrink-0 text-xs ${t.muted}`}>{row.visible_timestamp_text}</time> : <span className={`shrink-0 text-xs italic ${t.faint}`}>No time</span>;
 }
 function Preview({ row, t }: { row: Row; t: Tokens }) {
-  return <span className={`block min-w-0 truncate text-sm ${row.message_preview ? t.muted : `italic ${t.faint}`}`} title={row.message_preview ?? undefined}>{row.message_preview || "Message not captured"}</span>;
+  const message = approvedValue(row, "message") ?? row.message_preview;
+  return <span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>;
 }
 /** Source, verification and review state for one observation, kept on a quiet third line. */
 function Meta({ occurrence: { capture, row }, t, onOpen }: { occurrence: Occurrence; t: Tokens; onOpen: (id: string) => void }) {
@@ -139,7 +189,7 @@ function ChatEntryRow({ entry, t, onOpen }: { entry: ChatEntry; t: Tokens; onOpe
   }
   const occ = entry.occurrences, first = occ[0], screenshots = new Set(occ.map((o) => o.capture.id)).size;
   // A single preview is shown only when every observation agrees; otherwise none is promoted as "latest".
-  const agree = occ.every((o) => o.row.message_preview === first.row.message_preview && o.row.visible_timestamp_text === first.row.visible_timestamp_text);
+  const agree = occ.every((o) => (approvedValue(o.row, "message") ?? o.row.message_preview) === (approvedValue(first.row, "message") ?? first.row.message_preview) && o.row.visible_timestamp_text === first.row.visible_timestamp_text);
   const head = <span className="flex min-w-0 items-baseline justify-between gap-2"><span className={`min-w-0 truncate text-[15px] font-medium ${t.primary}`}>{entry.phone}</span>{agree ? <Time row={first.row} t={t} /> : <span className={`shrink-0 text-xs ${t.muted}`}>{occ.length} readings</span>}</span>;
   if (occ.length === 1) return <li className={rowShell(t)}><Avatar t={t} /><div className={body(t)}>
     <button type="button" onClick={() => onOpen(first.capture.id)} aria-label={`Open ${entry.phone} in screenshot #${first.capture.order}`} className="block w-full min-w-0 space-y-0.5 text-left">{head}<Preview row={first.row} t={t} /></button>

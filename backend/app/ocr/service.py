@@ -23,6 +23,7 @@ from backend.app.ocr.whatsapp_parser import PARSER_VERSION, parse_chat_list
 from backend.app.ocr.message_postcorrect import correct_message
 from backend.app.ocr.duplicate_detection import eligible_phone, phone_fingerprint
 from backend.app.ml.shadow import run_shadow_prediction
+from backend.app.ocr.cloud import effective_cloud_selection, run_cloud
 
 EngineFactory = Callable[[Settings], TesseractEngine]
 
@@ -157,6 +158,12 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     try:
         output = engine_factory(settings).run(decode_rgb(image.data))
         parsed = parse_chat_list(output.lines, image.width, image.height, field_cleanup=settings.layout_ocr_mode == "on")
+        cloud_results = []
+        mode, providers = effective_cloud_selection(settings)
+        # Settings are read from the encrypted server-side store for every attempt;
+        # static env values remain a fail-closed local-only fallback.
+        if mode != "LOCAL_ONLY":
+            cloud_results = run_cloud(settings, image.data, providers, image.mime_type)
     except Exception as exc:  # noqa: BLE001 - any failure must be recorded, never leave the capture "processing"
         code = exc.code if isinstance(exc, OcrError) else "OCR_FAILED"
         result.status, result.error_code, result.error_message = "failed", code, _OCR_ERROR_MESSAGE.get(code)
@@ -188,6 +195,13 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
     result.line_count = len(output.lines)
     result.lines = [line.to_dict() for line in output.lines]
     result.warnings = parsed.warnings + ([] if output.lines else ["Tesseract found no text"])
+    for cloud in cloud_results:
+        if cloud.status == "completed" and cloud.text != output.raw_text:
+            result.warnings.append(f"{cloud.provider} OCR differs from local Tesseract; local result retained.")
+        elif cloud.status == "failed":
+            suffix = f" ({cloud.status_code})" if cloud.status_code is not None else ""
+            reason = f"/{cloud.reason}" if cloud.reason and cloud.reason != cloud.error else ""
+            result.warnings.append(f"{cloud.provider} OCR failed [{cloud.phase}]: {cloud.error}{reason}{suffix}; local result retained.")
     if settings.screenshot_retention_enabled and capture.evidence_storage_key is None:
         result.warnings.append("Screenshot could not be retained on disk; Retry OCR and the image preview are unavailable.")
     if capture.cross_account_reuse:

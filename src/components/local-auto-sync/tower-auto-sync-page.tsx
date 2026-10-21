@@ -15,6 +15,7 @@ function regionalChange(a: Uint8Array, b: Uint8Array, threshold: number) { retur
 const errorText = (e: unknown) => e instanceof Error ? e.message : "Capture failed";
 
 export function TowerAutoSyncPage() {
+
   const [state, setState] = useState<State>("idle"); const [starting, setStarting] = useState(false); const [interval, setInterval] = useState(10); const [threshold, setThreshold] = useState(2); const [left, setLeft] = useState(0); const [right, setRight] = useState(100); const [mode, setMode] = useState<"regional" | "exact">("regional"); const [sampled, setSampled] = useState(0); const [skipped, setSkipped] = useState(0); const [jobs, setJobs] = useState<Job[]>([]); const [evidence, setEvidence] = useState<EvidenceSummary[]>([]); const [detail, setDetail] = useState<{ record: EvidenceDetail; image: string }>(); const [error, setError] = useState("");
   const stream = useRef<MediaStream | null>(null), video = useRef<HTMLVideoElement | null>(null), ticker = useRef<Ticker | null>(null), previous = useRef<Uint8Array | null>(null), gate = useRef(new ExactFrameGate()), jobsRef = useRef<Job[]>([]), draining = useRef(false), startLock = useRef(false), cfg = useRef({ interval, threshold, left, right, mode }); cfg.current = { interval, threshold, left, right, mode };
   useEffect(() => { window.dispatchEvent(new Event(state === "running" || state === "paused" ? "gharpayy-capture-started" : "gharpayy-capture-stopped")); }, [state]);

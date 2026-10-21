@@ -1,0 +1,9 @@
+import { describe, expect, it } from "vitest";
+import { runOcrEngines } from "@/src/lib/ocr-multi";
+const ok = (provider: "tesseract" | "gemini" | "groq", text: string) => async () => ({ provider, text, lines: [], durationMs: 1, status: "completed" as const });
+const base = { bytes: new Uint8Array([1]), credentials: { gemini: "a", groq: "b" }, runners: { tesseract: ok("tesseract", "local"), gemini: ok("gemini", "cloud"), groq: ok("groq", "cloud2") } };
+describe("multi-engine OCR", () => {
+  it("runs providers with local as primary", async () => { const result = await runOcrEngines({ ...base, config: { mode: "MULTI_PROVIDER", enabled: { tesseract: true, gemini: true, groq: true }, configured: { tesseract: true, gemini: true, groq: true }, externalOptIn: true, budgetRemaining: 3 } }); expect(result.results).toHaveLength(3); expect(result.primary.provider).toBe("tesseract"); });
+  it("blocks cloud engines without consent", async () => { const result = await runOcrEngines({ ...base, config: { mode: "MULTI_PROVIDER", enabled: { tesseract: true, gemini: true, groq: true }, configured: { tesseract: true, gemini: true, groq: true }, externalOptIn: false, budgetRemaining: 3 } }); expect(result.results.filter((r) => r.error === "consent_required")).toHaveLength(2); });
+  it("keeps local output when a cloud provider fails", async () => { const result = await runOcrEngines({ ...base, runners: { ...base.runners, gemini: async () => { throw new Error("quota"); } }, config: { mode: "MULTI_PROVIDER", enabled: { tesseract: true, gemini: true, groq: false }, configured: { tesseract: true, gemini: true, groq: false }, externalOptIn: true, budgetRemaining: 2 } }); expect(result.primary.text).toBe("local"); expect(result.results.find((r) => r.provider === "gemini")?.status).toBe("failed"); });
+});

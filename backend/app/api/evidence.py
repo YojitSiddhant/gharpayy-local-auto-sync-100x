@@ -3,6 +3,7 @@
 Same local-only boundary as OCR upload. Responses never contain file paths; images are served
 only through this authenticated route, never from a static directory.
 """
+import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -18,6 +19,7 @@ from backend.app.core.security import require_local_api_access
 from backend.app.db.session import get_db
 from backend.app.models.ocr import EvidenceAuditEvent, OcrFieldVerification, OcrFieldVerificationAudit
 from backend.app.ocr import evidence as ev
+from backend.app.ocr.cloud import groq_text_cleanup
 from backend.app.ocr.concurrency import run_ocr_bounded
 from backend.app.ocr.image_validation import validate_image
 from backend.app.ocr.service import EngineFactory, recover_stale_processing, run_ocr_attempt
@@ -78,6 +80,57 @@ class ProposalBody(BaseModel):
 class PurgeBody(Reviewer):
     confirm: Literal[True]
 
+class ClearMessageBody(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=120)
+
+
+def _safe_phone_format(original: str | None, suggested: object) -> str | None:
+    if not isinstance(suggested, str) or not suggested.strip() or not original:
+        return None
+    value = suggested.strip()
+    if re.sub(r"\D", "", value) != re.sub(r"\D", "", original):
+        return None
+    return value if value != original else None
+
+
+def _safe_message_cleanup(original: str | None, suggested: object, uncertain: bool) -> str | None:
+    if not isinstance(suggested, str) or not suggested.strip() or not original or uncertain:
+        return None
+    value = re.sub(r"\s+", " ", suggested.strip())
+    source = re.sub(r"\s+", " ", original.strip())
+    if value == original:
+        return None
+    if re.sub(r"[^\w\d]+", "", value, flags=re.UNICODE).casefold() == re.sub(r"[^\w\d]+", "", source, flags=re.UNICODE).casefold():
+        return value
+    # A short, explicitly identified OCR prefix may be removed only when the remainder is unchanged.
+    cleaned = re.sub(r"^(?:vw|sy|vy)\s+", "", source, flags=re.IGNORECASE)
+    if cleaned != source and value.casefold() == cleaned.casefold():
+        return value
+    return None
+
+
+def _save_auto_verification(db: Session, row, field_name: str, value: str, reviewer: str) -> bool:
+    label = db.scalar(select(OcrFieldVerification).where(
+        OcrFieldVerification.observation_id == row.id,
+        OcrFieldVerification.field_name == field_name,
+    ).with_for_update())
+    if label and label.status == "verified" and label.verified_value == value:
+        return False
+    observed = {"phone": row.phone_candidate_raw, "message": row.message_preview}[field_name]
+    payload = {"field_name": field_name, "observed_value": observed, "verified_value": value,
+               "status": "verified", "dataset_split": "unassigned", "approved_for_dataset": False}
+    if label is None:
+        label = OcrFieldVerification(observation_id=row.id, revision=1, reviewer=reviewer, **payload)
+        db.add(label)
+        db.flush()
+    else:
+        label.revision += 1
+        label.reviewer = reviewer
+        for key, item in payload.items():
+            setattr(label, key, item)
+    db.add(OcrFieldVerificationAudit(verification_id=label.id, revision=label.revision, payload=payload, reviewer=reviewer))
+    return True
+
 class FieldVerificationBody(BaseModel):
     position: int = Field(ge=1)
     field_name: Literal["phone", "message", "timestamp"]
@@ -130,6 +183,137 @@ def image(capture_id: str, db: Session = Depends(get_db), settings: Settings = D
     data = ev.evidence_path(settings, capture).read_bytes()
     return Response(content=data, media_type=capture.mime_type, headers={
         **NO_STORE, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'", "Content-Disposition": "inline"})
+
+
+@router.post("/clear-message-all")
+def clear_message_all(body: ClearMessageBody, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    if not settings.ocr_external_transmission_enabled:
+        raise ApiError(403, "EXTERNAL_TRANSMISSION_DISABLED", "External screenshot transmission is disabled.")
+    if not settings.groq_api_key:
+        raise ApiError(503, "GROQ_NOT_CONFIGURED", "Groq Vision is not configured.")
+    captures = ev.list_evidence(db, status_filter="all", limit=ev.LIST_LIMIT)
+    eligible = []
+    for capture in captures:
+        if capture.status != "completed":
+            continue
+        result = ev.latest_result(capture)
+        for row in (result.rows if result else []):
+            verified = {item.field_name for item in row.field_verifications if item.status == "verified"}
+            if "phone" in verified and "message" in verified:
+                continue
+            eligible.append((capture, row))
+    batches, current, size = [], [], 0
+    for item in eligible:
+        encoded_size = len(str(item[1].phone_candidate_raw or "")) + len(str(item[1].message_preview or "")) + 100
+        if current and (len(current) >= 40 or size + encoded_size > 90_000):
+            batches.append(current); current, size = [], 0
+        current.append(item); size += encoded_size
+    if current:
+        batches.append(current)
+    cleaned_messages = formatted_phones = analyzed = rows_analyzed = 0
+    review_items, failures, diagnostics = [], [], []
+    stopped_on_rate_limit = False
+    for batch_number, batch in enumerate(batches, 1):
+        if stopped_on_rate_limit:
+            break
+        request_rows = {f"r{index}": row for index, (_, row) in enumerate(batch, 1)}
+        rows = [{"row_id": request_id,
+                 "phone": None if "phone" in {item.field_name for item in row.field_verifications if item.status == "verified"} else row.phone_candidate_raw,
+                 "message": None if "message" in {item.field_name for item in row.field_verifications if item.status == "verified"} else row.message_preview}
+                for request_id, row in request_rows.items()]
+        cloud = groq_text_cleanup(settings.groq_api_key, settings.ocr_cloud_timeout_seconds, settings.groq_vision_model, rows)
+        if cloud.status == "failed":
+            failure = {"batch": batch_number, "provider": "groq", "status": "failure", "phase": cloud.phase,
+                       "category": cloud.error, "status_code": cloud.status_code, "safe_corrections": 0, "review_proposals": 0}
+            failures.append(failure); diagnostics.append(failure)
+            db.rollback()
+            if cloud.status_code == 429 or cloud.error in ("quota", "rate_limit"):
+                stopped_on_rate_limit = True
+            continue
+        by_id = {row.id: (capture, row) for capture, row in batch}
+        pending, batch_reviews = [], []
+        for observation in cloud.observations or []:
+            request_id = observation["row_id"]
+            row = request_rows[request_id]
+            capture = next(capture for capture, candidate in batch if candidate is row)
+            phone = _safe_phone_format(row.phone_candidate_raw, observation.get("phone"))
+            message = _safe_message_cleanup(row.message_preview, observation.get("message"), bool(observation.get("uncertain", True)))
+            if phone: pending.append((row, "phone", phone))
+            elif isinstance(observation.get("phone"), str) and observation["phone"].strip() != (row.phone_candidate_raw or ""):
+                batch_reviews.append({"capture_id": capture.id, "position": row.position, "field_name": "phone"})
+            if message: pending.append((row, "message", message))
+            elif isinstance(observation.get("message"), str) and observation["message"].strip() != (row.message_preview or ""):
+                batch_reviews.append({"capture_id": capture.id, "position": row.position, "field_name": "message"})
+        try:
+            for row, field_name, value in pending:
+                if _save_auto_verification(db, row, field_name, value, body.reviewer.strip()[:120]):
+                    cleaned_messages += field_name == "message"; formatted_phones += field_name == "phone"
+            db.commit()
+            analyzed += 1; rows_analyzed += len(batch); review_items.extend(batch_reviews)
+            diagnostics.append({"batch": batch_number, "provider": "groq", "status": "success", "phase": cloud.phase,
+                                "category": None, "status_code": cloud.status_code, "safe_corrections": len(pending),
+                                "review_proposals": len(batch_reviews)})
+        except Exception:
+            db.rollback()
+            cleaned_messages -= sum(field == "message" for _, field, _ in pending)
+            formatted_phones -= sum(field == "phone" for _, field, _ in pending)
+            failures.append({"batch": batch_number, "provider": "groq", "status": "failure", "phase": "storage",
+                             "category": "storage_error", "status_code": None, "safe_corrections": 0, "review_proposals": 0})
+    failed_batches = len(failures)
+    successful_batches = analyzed
+    return _json({"message": "Captured messages cleaned" if (cleaned_messages or formatted_phones) else "No safe changes found.",
+                  "messages_cleaned": cleaned_messages, "phones_formatted": formatted_phones,
+                  "review_count": len(review_items), "review_unavailable_count": len(failures),
+                  "rows_analyzed": rows_analyzed, "batches_successful": successful_batches,
+                  "batches_failed": failed_batches, "batches_total": len(batches), "review_items": review_items[:100],
+                  "failures": failures, "diagnostics": diagnostics, "rate_limited": stopped_on_rate_limit,
+                  "screenshots_processed": len({capture.id for capture, _ in eligible}),
+                  "screenshots_analyzed": len({capture.id for capture, _ in eligible}) if not failures else 0,
+                  "screenshots_failed": len(failures)})
+
+@router.post("/{capture_id}/clear-message")
+def clear_message(capture_id: str, body: ClearMessageBody, db: Session = Depends(get_db),
+                  settings: Settings = Depends(get_settings)):
+    if not settings.ocr_external_transmission_enabled:
+        raise ApiError(403, "EXTERNAL_TRANSMISSION_DISABLED", "External screenshot transmission is disabled.")
+    if not settings.groq_api_key:
+        raise ApiError(503, "GROQ_NOT_CONFIGURED", "Groq Vision is not configured.")
+    capture = ev.get_capture(db, capture_id)
+    if capture.status != "completed" or capture.trashed_at is not None:
+        raise ApiError(409, "EVIDENCE_NOT_READY", "Only active completed evidence can be reviewed.")
+    result = ev.latest_result(capture)
+    if result is None:
+        raise ApiError(404, "OCR_NOT_FOUND", "No OCR result is available.")
+    candidates = [row for row in result.rows if row.warnings or row.phone_status != "candidate" or not row.message_preview]
+    if not candidates:
+        candidates = list(result.rows)
+    request_rows = {f"r{index}": row for index, row in enumerate(candidates, 1)}
+    text_rows = [{"row_id": request_id, "phone": row.phone_candidate_raw, "message": row.message_preview}
+                 for request_id, row in request_rows.items()]
+    cloud = groq_text_cleanup(settings.groq_api_key, settings.ocr_cloud_timeout_seconds,
+                              settings.groq_vision_model, text_rows)
+    if cloud.status == "failed":
+        detail = f"Groq Clear Message failed [{cloud.phase}]: {cloud.error}"
+        if cloud.status_code is not None:
+            detail += f" ({cloud.status_code})"
+        code = "GROQ_CLEAR_MESSAGE_INVALID_ROWS" if cloud.error == "invalid_row_ids" else "GROQ_CLEAR_MESSAGE_FAILED"
+        raise ApiError(502, code, detail)
+    proposals = []
+    for observation in cloud.observations or []:
+        row = request_rows.get(observation.get("row_id"))
+        if row is None:
+            continue
+        for field, original, suggested in (
+            ("phone", row.phone_candidate_raw, observation.get("phone")),
+            ("message", row.message_preview, observation.get("message")),
+        ):
+            if isinstance(suggested, str) and suggested.strip() and suggested.strip() != (original or ""):
+                proposals.append({"position": row.position, "field_name": field, "original_value": original,
+                                  "suggested_value": suggested.strip(), "confidence": observation.get("confidence"),
+                                  "uncertain": bool(observation.get("uncertain", True))})
+    return _json({"capture_id": capture.id, "model": settings.groq_vision_model, "proposals": proposals,
+                  "diagnostics": {"candidate_count": len(candidates), "returned_count": len(cloud.observations or []),
+                                  "unmatched_count": 0, "rejected_count": 0}})
 
 
 @router.patch("/{capture_id}")
