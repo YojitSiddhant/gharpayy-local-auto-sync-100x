@@ -31,7 +31,8 @@ export function groupExtractedChats(sources: { capture: OrderedCapture; detail: 
   for (const { capture, detail } of [...sources].sort((a, b) => a.capture.order - b.capture.order)) {
     for (const row of [...detail.rows].sort((a, b) => a.position - b.position)) {
       const phone = confirmedPhone(row), occurrence = { capture, row };
-      if (!phone) { out.push({ kind: "unconfirmed", key: `${capture.id}:${row.position}`, occurrence }); continue; }
+      const message = approvedValue(row, "message") ?? row.message_preview;
+      if (!phone || !message?.trim()) continue;
       const existing = byPhone.get(phone);
       if (existing) existing.occurrences.push(occurrence);
       else { const entry = { kind: "number" as const, key: phone, phone, occurrences: [occurrence] }; byPhone.set(phone, entry); out.push(entry); }
@@ -161,7 +162,8 @@ function Time({ row, t }: { row: Row; t: Tokens }) {
 function Preview({ row, t }: { row: Row; t: Tokens }) {
   const message = approvedValue(row, "message") ?? row.message_preview;
   const labels = row.business_labels ?? [];
-  return <><span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>{labels.length > 0 && <span className="mt-1 flex flex-wrap gap-1">{labels.map((label) => <span key={label} className={`rounded-full px-1.5 py-0.5 text-[10px] ${t.chip}`}>{label}</span>)}</span>}</>;
+  const colors = row.business_label_colors ?? [];
+  return <><span className={`block min-w-0 truncate text-sm ${message ? t.muted : `italic ${t.faint}`}`} title={message ?? undefined}>{message || "Message not captured"}</span>{labels.length > 0 && <span className="mt-1 flex flex-wrap gap-1">{labels.map((label, index) => { const candidate = colors[index]; const color = candidate?.background && candidate.foreground ? candidate : undefined; return <span key={`${label}:${index}`} className={`rounded-full px-1.5 py-0.5 text-[10px] ${color ? "" : t.chip}`} style={color ? { backgroundColor: color.background, color: color.foreground } : undefined}>{label}</span>; })}</span>}</>;
 }
 /** Source, verification and review state for one observation, kept on a quiet third line. */
 function Meta({ occurrence: { capture, row }, t, onOpen }: { occurrence: Occurrence; t: Tokens; onOpen: (id: string) => void }) {

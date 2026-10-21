@@ -27,6 +27,7 @@ export const rowSchema = z.object({
   sender_direction: z.literal("unknown"),
   observed_name: z.string().nullable().optional(),
   business_labels: z.array(z.string()).optional(),
+  business_label_colors: z.array(z.object({ background: z.string(), foreground: z.string() })).optional(),
 });
 
 export const extractResponseSchema = z.object({

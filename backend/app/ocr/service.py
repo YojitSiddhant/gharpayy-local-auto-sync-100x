@@ -23,6 +23,7 @@ from backend.app.ocr.image_validation import ValidatedImage, decode_rgb
 from backend.app.ocr.storage import store_evidence
 from backend.app.ocr.whatsapp_parser import PARSER_VERSION, parse_chat_list
 from backend.app.ocr.message_postcorrect import correct_message
+from backend.app.ocr.business_badges import mark_business_badges
 from backend.app.ocr.duplicate_detection import eligible_phone, phone_fingerprint
 from backend.app.ml.shadow import run_shadow_prediction
 from backend.app.ocr.cloud import effective_cloud_selection, run_cloud
@@ -175,6 +176,7 @@ def run_ocr_attempt(db: Session, capture: ScreenshotCapture, image: ValidatedIma
                 raise
             output = TesseractEngine(settings.ocr_tesseract_timeout_seconds, settings.ocr_tesseract_psm).run(decode_rgb(image.data))
         parsed = parse_chat_list(output.lines, image.width, image.height, field_cleanup=settings.layout_ocr_mode == "on")
+        mark_business_badges(decode_rgb(image.data), parsed.rows)
         cloud_results = []
         mode, providers = effective_cloud_selection(settings)
         # Settings are read from the encrypted server-side store for every attempt;

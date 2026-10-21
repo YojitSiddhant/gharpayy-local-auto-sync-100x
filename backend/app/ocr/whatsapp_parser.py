@@ -367,7 +367,9 @@ def parse_chat_list(lines: list[LineLike], width: int, height: int, *, field_cle
             ocr_confidence=confidence,
             warnings=row_warnings,
             quarantined=phone.status in (PHONE_STATUS_AMBIGUOUS, PHONE_STATUS_CONFLICT),
-            source_lines=[{"text": l.text, "confidence": l.confidence, "bounds": _bounds(l)} for l in sorted(all_lines, key=lambda l: (l.top, l.left))],
+            source_lines=[{"text": l.text, "confidence": l.confidence, "bounds": _bounds(l),
+                           "words": [{"text": w.text, "confidence": w.confidence, "bounds": _bounds(w)} for w in (getattr(l, "words", None) or [])]}
+                          for l in sorted(all_lines, key=lambda l: (l.top, l.left))],
         ))
 
     _quarantine_cross_row_conflicts(rows)

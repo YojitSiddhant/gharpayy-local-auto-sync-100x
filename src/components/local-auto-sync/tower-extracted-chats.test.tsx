@@ -27,7 +27,7 @@ describe("groupExtractedChats", () => {
   it("groups a confirmed number across overlapping screenshots and keeps each source's message", () => {
     const entries = groupExtractedChats([
       { capture: second, detail: rec(second, [phoneRow(1, "+919876543210", { message_preview: "Second view", visible_timestamp_text: "2:55 pm" })]) },
-      { capture: first, detail: rec(first, [phoneRow(1, "+919876543210", { message_preview: "First view", visible_timestamp_text: "2:52 pm" }), phoneRow(2, "+919811112222")]) },
+      { capture: first, detail: rec(first, [phoneRow(1, "+919876543210", { message_preview: "First view", visible_timestamp_text: "2:52 pm" }), phoneRow(2, "+919811112222", { message_preview: "Second number" })]) },
     ]);
     expect(entries.map((e) => e.key)).toEqual(["+919876543210", "+919811112222"]);
     const grouped = entries[0];
@@ -39,13 +39,12 @@ describe("groupExtractedChats", () => {
       { capture: first, detail: rec(first, [ambiguous, phoneRow(3, "+919876543210", { quarantined: true })]) },
       { capture: second, detail: rec(second, [{ ...ambiguous, position: 1 }, row(2, { phone: { raw: "+91 98765", normalized: null, status: "conflict" } })]) },
     ]);
-    expect(entries).toHaveLength(4);
-    expect(entries.every((e) => e.kind === "unconfirmed")).toBe(true);
+    expect(entries).toHaveLength(0);
   });
 
   it("does not treat numbers inside message previews as contact identities", () => {
     const entries = groupExtractedChats([{ capture: first, detail: rec(first, [row(1, { phone: { raw: null, normalized: null, status: "none" }, display_header_text: "Ravi", message_preview: "call me on +91 98765 43210" })]) }]);
-    expect(entries).toEqual([expect.objectContaining({ kind: "unconfirmed" })]);
+    expect(entries).toEqual([]);
   });
 });
 
@@ -54,7 +53,7 @@ describe("AllExtractedChats", () => {
   const captures = orderCaptures([cap("s1", "2026-10-20T10:00:00Z"), cap("s2", "2026-10-20T10:00:10Z")]);
   const records: Record<string, EvidenceDetail> = {
     s1: rec(captures[0], [phoneRow(1, "+919876543210", { message_preview: "Need a room" }), ambiguous]),
-    s2: rec(captures[1], [phoneRow(1, "+919876543210", { message_preview: null, visible_timestamp_text: null })]),
+    s2: rec(captures[1], [phoneRow(1, "+919876543210", { message_preview: "Second view", visible_timestamp_text: "2:55 pm" })]),
   };
   const serve = () => getEvidence.mockImplementation(async (id) => records[id]);
 
@@ -89,16 +88,13 @@ describe("AllExtractedChats", () => {
     const observations = within(within(list).getByRole("list", { name: "Observations of +919876543210" })).getAllByRole("listitem");
     expect(observations).toHaveLength(2);
     expect(within(observations[0]).getByText("Need a room")).toBeInTheDocument();
-    expect(within(observations[1]).getByText("Message not captured")).toBeInTheDocument();
-    expect(within(observations[1]).getByText("No time")).toBeInTheDocument();
-    expect(within(list).getByText("Number needs review")).toBeInTheDocument();
-    expect(within(list).getByText(/OCR header: “\+91 9876O 43210”/)).toBeInTheDocument();
-    expect(within(list).queryByText("Unverified OCR")).not.toBeInTheDocument();
+    expect(within(observations[1]).getByText("Second view")).toBeInTheDocument();
+    expect(within(observations[1]).getByText("2:55 pm")).toBeInTheDocument();
+    expect(within(list).queryByText("Number needs review")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Includes every screenshot shown above");
     fireEvent.click(within(observations[1]).getByRole("button", { name: "Open screenshot #2 details" }));
     expect(onOpen).toHaveBeenCalledWith("s2");
-    fireEvent.click(within(list).getByRole("button", { name: "Open number needs review in screenshot #1" }));
-    expect(onOpen).toHaveBeenLastCalledWith("s1");
+    expect(onOpen).toHaveBeenCalledWith("s2");
   });
 
   it("shows one shared preview when every grouped observation agrees", async () => {
@@ -134,13 +130,8 @@ describe("AllExtractedChats", () => {
   it("labels a missing number without repairing it and keeps warnings expandable", async () => {
     getEvidence.mockImplementation(async () => rec(captures[0], [row(1, { phone: { raw: null, normalized: null, status: "none" }, display_header_text: null, message_preview: null, visible_timestamp_text: null, warnings: ["Header line not found"] })]));
     render(<AllExtractedChats captures={captures.slice(0, 1)} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
-    const item = (await screen.findByText("Number not captured")).closest("li")!;
-    expect(within(item).getByText("Message not captured")).toBeInTheDocument();
-    expect(within(item).getByText("No time")).toBeInTheDocument();
-    const summary = within(item).getByText("Needs review · 1 warning");
-    expect(summary.closest("details")).not.toHaveAttribute("open");
-    expect(within(item).getByText("Header line not found")).toBeInTheDocument();
-    expect(within(item).getByText(/Phone reading: none/)).toBeInTheDocument();
+    expect(await screen.findByText("No chat rows were read from these screenshots.")).toBeInTheDocument();
+    expect(screen.queryByText("Number not captured")).not.toBeInTheDocument();
   });
 
   it("switches between dark and light themes without resetting data, expansion or scroll", async () => {
@@ -194,7 +185,7 @@ describe("AllExtractedChats", () => {
     const reviewed = orderCaptures([cap("s1", "2026-10-20T10:00:00Z", "reviewed")]);
     records.s1 = { ...records.s1, status: "reviewed" };
     rerender(<AllExtractedChats captures={reviewed} capturing={false} pendingJobs={0} onOpen={vi.fn()} />);
-    expect(await screen.findAllByText("Screenshot reviewed")).toHaveLength(2);
+    expect(await screen.findAllByText("Screenshot reviewed")).toHaveLength(1);
     expect(getEvidence).toHaveBeenCalledTimes(2);
   });
 
